@@ -1,11 +1,13 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+import database
 import models
 
 
@@ -14,6 +16,7 @@ import models
 # resources (HTTP clients, DB connections) that need cleanup.
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    database.init_db()
     models.init_client()
     yield
     await models.close_client()
@@ -59,3 +62,53 @@ async def health() -> dict[str, str]:
 @app.get("/models")
 async def get_models() -> list[dict[str, Any]]:
     return await models.list_models()
+
+
+# --- Conversation endpoints ---
+
+
+# Pydantic model for the POST /conversations request body.
+# BaseModel validates incoming JSON automatically — if "mode" is missing,
+# FastAPI returns a 422 error with a clear message instead of crashing.
+# Literal restricts mode to valid values, so invalid modes like "banana"
+# get a clean 422 error instead of hitting the database and causing a 500.
+class CreateConversationRequest(BaseModel):
+    mode: Literal["chat", "documents", "writing", "vision"]
+    title: str | None = None
+
+
+# These conversation endpoints are plain `def` (not `async def`) because they
+# call synchronous sqlite3 functions. FastAPI automatically runs plain `def`
+# endpoints in a thread pool, so they don't block the async event loop.
+# If these were `async def`, the blocking sqlite3 calls would freeze the
+# entire server until each database operation finishes.
+
+
+@app.get("/conversations")
+def list_conversations() -> list[dict[str, Any]]:
+    """List all conversations, newest first, with message counts."""
+    return database.list_conversations()
+
+
+@app.post("/conversations", status_code=201)
+def create_conversation(body: CreateConversationRequest) -> dict[str, str]:
+    """Create a new conversation. Returns its ID."""
+    conversation_id = database.create_conversation(mode=body.mode, title=body.title)
+    return {"id": conversation_id}
+
+
+@app.get("/conversations/{conversation_id}")
+def get_conversation(conversation_id: str) -> dict[str, Any]:
+    """Return a single conversation with all its messages."""
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+@app.delete("/conversations/{conversation_id}", status_code=204)
+def delete_conversation(conversation_id: str) -> None:
+    """Delete a conversation and all its messages."""
+    deleted = database.delete_conversation(conversation_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Conversation not found")

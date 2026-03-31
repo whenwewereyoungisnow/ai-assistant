@@ -17,6 +17,12 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+# load_dotenv() reads key=value pairs from a .env file in the project root
+# and sets them as environment variables. This keeps secrets (API keys, DB paths)
+# out of source code. If .env doesn't exist yet, this is a harmless no-op.
+load_dotenv()
 
 # All Ollama API calls go to this base URL.
 # Defaults to localhost but can be overridden via environment variable —
@@ -55,7 +61,7 @@ async def close_client() -> None:
 
 async def stream_chat(
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     options: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a chat response token-by-token from Ollama.
@@ -102,7 +108,7 @@ async def stream_chat(
 
 async def chat(
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     options: dict[str, Any] | None = None,
 ) -> str:
     """Send a chat request and return the complete response as a string.
@@ -134,7 +140,10 @@ async def chat(
     data = response.json()
     if "error" in data:
         raise RuntimeError(f"Ollama error: {data['error']}")
-    return data["message"]["content"]
+    message = data.get("message")
+    if message is None:
+        raise RuntimeError(f"Ollama returned no message: {data}")
+    return message.get("content", "")
 
 
 async def classify(question: str, routes: list[dict[str, str]]) -> dict[str, str]:
@@ -176,7 +185,14 @@ async def classify(question: str, routes: list[dict[str, str]]) -> dict[str, str
 
     try:
         raw = await chat("llama3.2:3b", messages, options)
-        result = json.loads(raw)
+        # Small models often wrap JSON in markdown code fences like ```json...```
+        # Strip those so json.loads() can parse the actual JSON inside.
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = [line for line in lines if not line.strip().startswith("```")]
+            cleaned = "\n".join(lines)
+        result = json.loads(cleaned)
         # Validate the response has the expected keys
         if "route" not in result:
             raise ValueError("Missing 'route' key")
@@ -212,7 +228,12 @@ async def embed(texts: str | list[str]) -> list[list[float]]:
     )
     response.raise_for_status()
     data = response.json()
-    return data["embeddings"]
+    if "error" in data:
+        raise RuntimeError(f"Ollama embedding error: {data['error']}")
+    embeddings = data.get("embeddings")
+    if embeddings is None:
+        raise RuntimeError(f"Unexpected Ollama response — no 'embeddings' key: {data}")
+    return embeddings
 
 
 async def list_models() -> list[dict[str, Any]]:
