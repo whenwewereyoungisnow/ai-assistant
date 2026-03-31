@@ -46,10 +46,10 @@ Only create a new file if it represents a genuinely separate concern.
 ## Models
 
 - **Classifier:** `llama3.2:3b` — tiny, stays resident, routes questions
-- **General route:** `qwen3.5:35b-a3b` — fast MoE (think: false)
+- **General route:** `qwen3.5:35b-a3b-coding-nvfp4` — fast MoE, MLX-accelerated (think: false)
 - **Code route:** `qwen3.5:27b` — dense, strong at programming (think: false)
 - **Reasoning route:** `deepseek-r1:32b` — chain-of-thought (thinking ON)
-- **Writer:** `qwen3.5:35b-a3b` — creative drafting (think: false)
+- **Writer:** `qwen3.5:35b-a3b-coding-nvfp4` — creative drafting, MLX-accelerated (think: false)
 - **Editor:** `deepseek-r1:32b` — detailed critique (thinking ON)
 - **Embeddings:** `qwen3-embedding:4b` — semantic search
 - **Vision:** `llama3.2-vision` — image understanding (11B, ~7GB)
@@ -57,8 +57,8 @@ Only create a new file if it represents a genuinely separate concern.
 
 ## Memory constraints
 
-- Writer (35b-a3b, ~26GB) and Editor (deepseek-r1, ~20GB) cannot fit
-  simultaneously. Ollama swaps them on each handoff (~20s per swap).
+- Writer/General (35b-a3b-coding-nvfp4, ~21GB) and Editor (deepseek-r1, ~20GB)
+  cannot fit simultaneously. Ollama swaps them on each handoff (~20s per swap).
 - Classifier (llama3.2:3b, ~2.3GB) stays resident alongside any large model.
 - Embedding model loads briefly for upload/search, doesn't need to stay loaded.
 - Vision model (llama3.2-vision, ~7GB) loads on demand for image queries.
