@@ -1,0 +1,1022 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Assistant</title>
+
+    <!-- marked.js renders markdown to HTML. highlight.js adds syntax coloring
+         to code blocks. DOMPurify sanitizes the HTML so rendered markdown can't
+         inject malicious scripts (XSS protection). All loaded from CDN as
+         allowed by the project rules. -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <style>
+        /* CSS variables for theming — change these to restyle the whole app.
+           Using variables means colors are defined once and reused everywhere,
+           so switching to light mode later is just changing these values. */
+        :root {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16213e;
+            --bg-tertiary: #0f3460;
+            --bg-input: #1a1a3e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0b8;
+            --text-muted: #6a6a80;
+            --accent: #4a9eff;
+            --accent-hover: #3a8eef;
+            --border: #2a2a4a;
+            --user-bubble: #1e3a5f;
+            --assistant-bubble: #1e1e3a;
+            --badge-bg: #2a2a4a;
+            --danger: #e74c3c;
+            --success: #2ecc71;
+            --sidebar-width: 280px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* --- Sidebar --- */
+        .sidebar {
+            width: var(--sidebar-width);
+            min-width: var(--sidebar-width);
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        .sidebar-header {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .new-chat-btn {
+            width: 100%;
+            padding: 10px 16px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .new-chat-btn:hover {
+            background: var(--accent-hover);
+        }
+
+        .conversation-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .conversation-item {
+            padding: 10px 12px;
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 2px;
+            transition: background 0.15s;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .conversation-item:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .conversation-item.active {
+            background: var(--bg-tertiary);
+        }
+
+        .conversation-item-info {
+            overflow: hidden;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .conversation-title {
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .conversation-time {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .delete-btn {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.15s, color 0.15s;
+        }
+
+        .conversation-item:hover .delete-btn {
+            opacity: 1;
+        }
+
+        .delete-btn:hover {
+            color: var(--danger);
+        }
+
+        /* --- Main area --- */
+        .main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            min-width: 0;
+        }
+
+        /* Mode selector bar at the top */
+        .mode-bar {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+
+        .mode-btn {
+            padding: 6px 16px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.15s;
+        }
+
+        .mode-btn:hover {
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+
+        .mode-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        .mode-btn.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        /* --- Messages area --- */
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .welcome {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            flex: 1;
+            color: var(--text-muted);
+            text-align: center;
+            gap: 12px;
+        }
+
+        .welcome h2 {
+            font-size: 24px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .welcome p {
+            font-size: 14px;
+            max-width: 400px;
+        }
+
+        .message {
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+
+        .message-role {
+            font-weight: 600;
+            text-transform: capitalize;
+        }
+
+        .message-role.user {
+            color: var(--accent);
+        }
+
+        .message-role.assistant {
+            color: var(--success);
+        }
+
+        /* Routing badge shows which model answered and why.
+           This is key for learning — you can see the classifier's
+           decision-making in real time. */
+        .routing-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 8px;
+            background: var(--badge-bg);
+            border-radius: 4px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .routing-badge .model-name {
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        .message-content {
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .message.user .message-content {
+            background: var(--user-bubble);
+            border: 1px solid var(--border);
+        }
+
+        .message.assistant .message-content {
+            background: var(--assistant-bubble);
+            border: 1px solid var(--border);
+        }
+
+        /* Markdown content styling */
+        .message-content p {
+            margin-bottom: 8px;
+        }
+
+        .message-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-content pre {
+            background: #0d1117;
+            border-radius: 8px;
+            padding: 12px;
+            overflow-x: auto;
+            margin: 8px 0;
+            border: 1px solid var(--border);
+        }
+
+        .message-content code {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 13px;
+        }
+
+        .message-content :not(pre) > code {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+
+        .message-content ul, .message-content ol {
+            margin: 8px 0;
+            padding-left: 24px;
+        }
+
+        .message-content li {
+            margin-bottom: 4px;
+        }
+
+        .message-content blockquote {
+            border-left: 3px solid var(--accent);
+            padding-left: 12px;
+            color: var(--text-secondary);
+            margin: 8px 0;
+        }
+
+        .message-content h1, .message-content h2, .message-content h3 {
+            margin: 12px 0 8px 0;
+        }
+
+        .message-content table {
+            border-collapse: collapse;
+            margin: 8px 0;
+            width: 100%;
+        }
+
+        .message-content th, .message-content td {
+            border: 1px solid var(--border);
+            padding: 6px 12px;
+            text-align: left;
+        }
+
+        .message-content th {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .message-content a {
+            color: var(--accent);
+        }
+
+        /* Thinking blocks from deepseek-r1 — collapsible so they don't
+           clutter the response. The model wraps its reasoning in
+           <think>...</think> tags which we parse and display here. */
+        .thinking-block {
+            margin: 8px 0;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .thinking-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.03);
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-muted);
+            width: 100%;
+            border: none;
+            text-align: left;
+        }
+
+        .thinking-toggle:hover {
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .thinking-content {
+            padding: 8px 12px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--border);
+            display: none;
+            white-space: pre-wrap;
+        }
+
+        .thinking-content.open {
+            display: block;
+        }
+
+        /* Timing info shown after response completes */
+        .timing-info {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            padding-left: 16px;
+        }
+
+        /* --- Input area --- */
+        .input-area {
+            padding: 16px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+
+        .input-wrapper {
+            max-width: 780px;
+            margin: 0 auto;
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .input-wrapper textarea {
+            flex: 1;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 14px;
+            resize: none;
+            min-height: 44px;
+            max-height: 200px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        .input-wrapper textarea:focus {
+            border-color: var(--accent);
+        }
+
+        .send-btn {
+            padding: 10px 20px;
+            background: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+            height: 44px;
+        }
+
+        .send-btn:hover {
+            background: var(--accent-hover);
+        }
+
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* --- Streaming indicator --- */
+        .streaming-indicator {
+            display: inline-block;
+            width: 6px;
+            height: 14px;
+            background: var(--accent);
+            border-radius: 2px;
+            animation: blink 0.8s infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.2; }
+        }
+
+        /* --- "Coming soon" toast for disabled modes --- */
+        .toast {
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 13px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        .toast.show {
+            opacity: 1;
+        }
+
+        /* --- Responsive: hide sidebar on small screens --- */
+        @media (max-width: 700px) {
+            .sidebar {
+                display: none;
+            }
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Sidebar: conversation list -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
+        </div>
+        <div class="conversation-list" id="conversationList"></div>
+    </div>
+
+    <!-- Main chat area -->
+    <div class="main">
+        <!-- Mode selector — only Chat is active for now.
+             The others are wired up to show "Coming soon" so the UI
+             is ready when we build those features in later steps. -->
+        <div class="mode-bar">
+            <button class="mode-btn active" data-mode="chat">Chat</button>
+            <button class="mode-btn disabled" data-mode="documents">Documents</button>
+            <button class="mode-btn disabled" data-mode="writing">Writing</button>
+            <button class="mode-btn disabled" data-mode="vision">Vision</button>
+        </div>
+
+        <div class="messages" id="messages">
+            <div class="welcome">
+                <h2>AI Assistant</h2>
+                <p>Ask me anything. I'll route your question to the best model automatically.</p>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="input-wrapper">
+                <textarea id="userInput"
+                          placeholder="Type a message..."
+                          rows="1"
+                          onkeydown="handleKeydown(event)"></textarea>
+                <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // =========================================================
+        // State
+        // =========================================================
+        let currentConversationId = null;
+        let isStreaming = false;
+
+        // Configure marked.js for markdown rendering.
+        // highlight callback tells marked to use highlight.js for code blocks.
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    return hljs.highlight(code, { language: lang }).value;
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,
+        });
+
+        // =========================================================
+        // Conversations
+        // =========================================================
+
+        async function loadConversations() {
+            const res = await fetch('/conversations');
+            const conversations = await res.json();
+            renderConversationList(conversations);
+        }
+
+        function renderConversationList(conversations) {
+            const list = document.getElementById('conversationList');
+            // Filter to only show chat conversations in chat mode
+            const chatConversations = conversations.filter(c => c.mode === 'chat');
+
+            if (chatConversations.length === 0) {
+                list.innerHTML = '<div style="padding: 16px; color: var(--text-muted); font-size: 13px; text-align: center;">No conversations yet</div>';
+                return;
+            }
+
+            list.innerHTML = chatConversations.map(c => `
+                <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
+                     onclick="loadConversation('${c.id}')">
+                    <div class="conversation-item-info">
+                        <div class="conversation-title">${escapeHtml(c.title)}</div>
+                        <div class="conversation-time">${timeAgo(c.updated_at)}</div>
+                    </div>
+                    <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${c.id}')" title="Delete">&#x2715;</button>
+                </div>
+            `).join('');
+        }
+
+        async function newChat() {
+            const res = await fetch('/conversations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'chat' }),
+            });
+            const data = await res.json();
+            currentConversationId = data.id;
+            clearMessages();
+            await loadConversations();
+        }
+
+        async function loadConversation(id) {
+            currentConversationId = id;
+            const res = await fetch(`/conversations/${id}`);
+            const conversation = await res.json();
+            renderMessages(conversation.messages);
+            await loadConversations(); // re-render to update active state
+        }
+
+        async function deleteConversation(id) {
+            await fetch(`/conversations/${id}`, { method: 'DELETE' });
+            if (currentConversationId === id) {
+                currentConversationId = null;
+                clearMessages();
+            }
+            await loadConversations();
+        }
+
+        // =========================================================
+        // Messages
+        // =========================================================
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = `
+                <div class="welcome">
+                    <h2>AI Assistant</h2>
+                    <p>Ask me anything. I'll route your question to the best model automatically.</p>
+                </div>`;
+        }
+
+        function renderMessages(messages) {
+            const container = document.getElementById('messages');
+            container.innerHTML = '';
+
+            for (const msg of messages) {
+                const el = createMessageElement(msg.role, msg.content, msg.metadata);
+                container.appendChild(el);
+            }
+
+            scrollToBottom();
+        }
+
+        function createMessageElement(role, content, metadata) {
+            const div = document.createElement('div');
+            div.className = `message ${role}`;
+
+            // Build header with role label and optional routing badge
+            let headerHtml = `<span class="message-role ${role}">${role}</span>`;
+
+            if (role === 'assistant' && metadata) {
+                headerHtml += `
+                    <span class="routing-badge">
+                        <span class="model-name">${escapeHtml(metadata.model || '')}</span>
+                        <span>${escapeHtml(metadata.reason || '')}</span>
+                    </span>`;
+            }
+
+            div.innerHTML = `
+                <div class="message-header">${headerHtml}</div>
+                <div class="message-content">${renderMarkdown(content)}</div>
+            `;
+
+            // Add timing info if available
+            if (role === 'assistant' && metadata && metadata.total_ms) {
+                const timing = document.createElement('div');
+                timing.className = 'timing-info';
+                timing.textContent = `${(metadata.total_ms / 1000).toFixed(1)}s total · ${(metadata.stream_ms / 1000).toFixed(1)}s generation · routed in ${metadata.classify_ms}ms`;
+                div.appendChild(timing);
+            }
+
+            return div;
+        }
+
+        /**
+         * Render markdown content safely.
+         * marked.js converts markdown → HTML, then DOMPurify strips any
+         * dangerous tags/attributes (XSS protection). This is important
+         * because model output is untrusted — a model could theoretically
+         * output <script> tags in its response.
+         *
+         * We also handle deepseek-r1's <think>...</think> blocks here,
+         * converting them into collapsible sections so the reasoning
+         * process is visible but not overwhelming.
+         */
+        function renderMarkdown(text) {
+            if (!text) return '';
+
+            // Extract <think> blocks BEFORE markdown + sanitization.
+            // Why? DOMPurify strips inline onclick handlers (for XSS safety),
+            // which would break our collapsible toggle buttons. So we replace
+            // <think> blocks with placeholders, run marked + DOMPurify on the
+            // safe text, then re-insert our trusted HTML afterwards.
+            const thinkBlocks = [];
+            text = text.replace(/<think>([\s\S]*?)<\/think>/g, (match, thinkContent) => {
+                const id = 'think-' + Math.random().toString(36).substring(2, 9);
+                thinkBlocks.push({ id, content: thinkContent.trim() });
+                return `%%THINK_${thinkBlocks.length - 1}%%`;
+            });
+
+            let html = DOMPurify.sanitize(marked.parse(text));
+
+            // Re-insert thinking blocks after sanitization. These are our own
+            // trusted HTML (not model output), so there's no XSS risk.
+            thinkBlocks.forEach((block, i) => {
+                html = html.replace(`%%THINK_${i}%%`, `
+                    <div class="thinking-block">
+                        <button class="thinking-toggle" onclick="document.getElementById('${block.id}').classList.toggle('open'); this.querySelector('.arrow').textContent = document.getElementById('${block.id}').classList.contains('open') ? '\u25BC' : '\u25B6'">
+                            <span class="arrow">\u25B6</span> Reasoning
+                        </button>
+                        <div class="thinking-content" id="${block.id}">${escapeHtml(block.content)}</div>
+                    </div>
+                `);
+            });
+
+            return html;
+        }
+
+        // =========================================================
+        // Sending messages + SSE streaming
+        // =========================================================
+
+        async function sendMessage() {
+            const input = document.getElementById('userInput');
+            const text = input.value.trim();
+            if (!text || isStreaming) return;
+
+            // Auto-create a conversation if none is selected
+            if (!currentConversationId) {
+                const res = await fetch('/conversations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: 'chat' }),
+                });
+                const data = await res.json();
+                currentConversationId = data.id;
+                await loadConversations();
+            }
+
+            // Clear the welcome message if it's still showing
+            const welcome = document.querySelector('.welcome');
+            if (welcome) welcome.remove();
+
+            // Add user message to UI
+            const messagesContainer = document.getElementById('messages');
+            const userEl = createMessageElement('user', text, null);
+            messagesContainer.appendChild(userEl);
+
+            input.value = '';
+            input.style.height = 'auto';
+            scrollToBottom();
+
+            // Start streaming the response.
+            // We use fetch() + ReadableStream instead of EventSource because
+            // the browser's EventSource API only supports GET requests, but
+            // our chat endpoint is POST (it sends the message in the body).
+            isStreaming = true;
+            document.getElementById('sendBtn').disabled = true;
+
+            try {
+                const res = await fetch(`/chat/${currentConversationId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text }),
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    showToast(err.detail || err.error || 'Something went wrong');
+                    return;
+                }
+
+                // Parse the SSE stream manually.
+                // SSE format: each event is "event: type\r\ndata: json\r\n\r\n"
+                // sse-starlette uses \r\n (HTTP standard), so we normalize to \n
+                // before splitting. We also skip SSE comment lines (": ping ...")
+                // that sse-starlette sends as keep-alives during model loading.
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+
+                let assistantDiv = null;
+                let contentDiv = null;
+                let fullContent = '';
+                let metadata = {};
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    // Normalize \r\n to \n so the split below works consistently.
+                    // HTTP uses \r\n, but splitting on \n\n wouldn't match \r\n\r\n.
+                    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+
+                    // SSE events are separated by double newlines.
+                    // Each event has "event: <type>\ndata: <json>"
+                    const parts = buffer.split('\n\n');
+                    // Keep the last part — it might be incomplete
+                    buffer = parts.pop();
+
+                    for (const part of parts) {
+                        if (!part.trim()) continue;
+
+                        // Skip SSE comments (lines starting with ":").
+                        // sse-starlette sends ": ping" as keep-alive during
+                        // slow model loading. These aren't events.
+                        if (part.trim().startsWith(':')) continue;
+
+                        let eventType = 'message';
+                        // Collect all data: lines and join them — the SSE spec
+                        // allows multi-line data by sending multiple data: lines.
+                        const dataLines = [];
+
+                        for (const line of part.split('\n')) {
+                            if (line.startsWith('event:')) {
+                                eventType = line.substring(6).trim();
+                            } else if (line.startsWith('data:')) {
+                                dataLines.push(line.substring(5).trim());
+                            }
+                        }
+
+                        const eventData = dataLines.join('\n');
+                        if (!eventData) continue;
+
+                        let parsed;
+                        try {
+                            parsed = JSON.parse(eventData);
+                        } catch {
+                            continue;
+                        }
+
+                        if (eventType === 'routing') {
+                            // Create the assistant message element with routing info
+                            metadata = parsed;
+                            assistantDiv = document.createElement('div');
+                            assistantDiv.className = 'message assistant';
+
+                            assistantDiv.innerHTML = `
+                                <div class="message-header">
+                                    <span class="message-role assistant">assistant</span>
+                                    <span class="routing-badge">
+                                        <span class="model-name">${escapeHtml(parsed.model)}</span>
+                                        <span>${escapeHtml(parsed.reason)}</span>
+                                    </span>
+                                </div>
+                                <div class="message-content"><span class="streaming-indicator"></span></div>
+                            `;
+
+                            contentDiv = assistantDiv.querySelector('.message-content');
+                            messagesContainer.appendChild(assistantDiv);
+                            scrollToBottom();
+                        }
+
+                        else if (eventType === 'token') {
+                            fullContent += parsed.content;
+                            if (contentDiv) {
+                                // Re-render the full markdown on each token.
+                                // This is simpler than trying to append markdown
+                                // incrementally (which breaks with partial syntax).
+                                // Performance is fine because marked.js is fast.
+                                contentDiv.innerHTML = renderMarkdown(fullContent) +
+                                    '<span class="streaming-indicator"></span>';
+                                scrollToBottom();
+                            }
+                        }
+
+                        else if (eventType === 'done') {
+                            if (contentDiv) {
+                                // Final render without the blinking cursor
+                                contentDiv.innerHTML = renderMarkdown(fullContent);
+                                // Re-highlight code blocks after final render
+                                contentDiv.querySelectorAll('pre code').forEach(block => {
+                                    hljs.highlightElement(block);
+                                });
+                            }
+
+                            // Add timing info
+                            if (assistantDiv && parsed.total_ms) {
+                                const timing = document.createElement('div');
+                                timing.className = 'timing-info';
+                                timing.textContent = `${(parsed.total_ms / 1000).toFixed(1)}s total · ${(parsed.stream_ms / 1000).toFixed(1)}s generation · routed in ${metadata.classify_ms}ms`;
+                                assistantDiv.appendChild(timing);
+                            }
+
+                            // Refresh sidebar now, then again after a delay to catch
+                            // the auto-generated title. Title generation runs as a
+                            // background task on the backend, so it likely hasn't
+                            // finished by the time the stream ends.
+                            await loadConversations();
+                            setTimeout(() => loadConversations(), 2500);
+                        }
+
+                        else if (eventType === 'error') {
+                            if (contentDiv) {
+                                contentDiv.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(parsed.error)}</span>`;
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                showToast('Connection error: ' + err.message);
+            } finally {
+                isStreaming = false;
+                document.getElementById('sendBtn').disabled = false;
+            }
+        }
+
+        // =========================================================
+        // Input handling
+        // =========================================================
+
+        function handleKeydown(e) {
+            // Enter sends, Shift+Enter adds a new line
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        }
+
+        // Auto-resize textarea as user types
+        document.getElementById('userInput').addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+        });
+
+        // Mode selector buttons
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.classList.contains('disabled')) {
+                    showToast(`${btn.dataset.mode} mode — coming soon!`);
+                    return;
+                }
+                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+
+        // =========================================================
+        // Utilities
+        // =========================================================
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function scrollToBottom() {
+            const container = document.getElementById('messages');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+
+        /**
+         * Convert an ISO timestamp to a relative time string like "5 min ago".
+         * We parse the timestamp as UTC (the database stores UTC) and compare
+         * to the current time.
+         */
+        function timeAgo(isoString) {
+            const date = new Date(isoString);
+            const now = new Date();
+            const seconds = Math.floor((now - date) / 1000);
+
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+            return date.toLocaleDateString();
+        }
+
+        // =========================================================
+        // Init
+        // =========================================================
+
+        // Load conversations when the page loads
+        loadConversations();
+    </script>
+</body>
+</html>

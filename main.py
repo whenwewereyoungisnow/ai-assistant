@@ -1,14 +1,19 @@
+import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 import database
 import models
+import router
 
 
 # Lifespan handler — FastAPI runs the code before "yield" on startup, and
@@ -23,6 +28,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(title="AI Assistant", lifespan=lifespan)
+
+# Path to the templates directory. Using Path(__file__).parent so it
+# resolves correctly regardless of where you run the app from.
+TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 # Global exception handlers — catch httpx errors in one place so every
@@ -49,9 +58,11 @@ async def ollama_http_error(
     )
 
 
+# Serve the frontend. FileResponse sends a static file directly — no
+# template engine needed since the frontend is pure HTML + JS.
 @app.get("/")
-async def root() -> dict[str, str]:
-    return {"message": "AI Assistant - coming soon"}
+async def root() -> FileResponse:
+    return FileResponse(TEMPLATES_DIR / "index.html")
 
 
 @app.get("/health")
@@ -75,6 +86,10 @@ async def get_models() -> list[dict[str, Any]]:
 class CreateConversationRequest(BaseModel):
     mode: Literal["chat", "documents", "writing", "vision"]
     title: str | None = None
+
+
+class ChatRequest(BaseModel):
+    message: str
 
 
 # These conversation endpoints are plain `def` (not `async def`) because they
@@ -112,3 +127,146 @@ def delete_conversation(conversation_id: str) -> None:
     deleted = database.delete_conversation(conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found")
+
+
+# --- Chat endpoint (SSE streaming) ---
+#
+# How this works end-to-end:
+# 1. Frontend sends POST /chat/{id} with {"message": "user's question"}
+# 2. We save the user message to the database immediately
+# 3. We load conversation history from the database so the model has context
+# 4. router.route_and_respond() classifies the question, picks a model,
+#    and streams the response token by token
+# 5. We wrap that stream in an EventSourceResponse (SSE) so the frontend
+#    receives events in real time
+# 6. After streaming completes, we save the full assistant response to the DB
+# 7. If this is the first message, we auto-generate a title in the background
+
+
+@app.post("/chat/{conversation_id}")
+async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceResponse:
+    """Send a message and stream the AI response via Server-Sent Events.
+
+    The response is a stream of SSE events:
+    - event: routing  → which model was chosen and why
+    - event: token    → one token of the response
+    - event: done     → timing stats (response is complete)
+    - event: error    → something went wrong
+    """
+    # Verify the conversation exists.
+    # We use run_in_executor to offload blocking SQLite calls to a thread
+    # pool. Without this, synchronous database I/O would freeze the async
+    # event loop and block all other requests until the DB call finishes.
+    # FastAPI auto-threads plain `def` endpoints (see the CRUD endpoints
+    # above), but since this endpoint is `async def` (required for SSE),
+    # we need to handle it manually.
+    loop = asyncio.get_event_loop()
+    conversation = await loop.run_in_executor(
+        None, database.get_conversation, conversation_id
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Save the user's message to the database right away.
+    # We do this before streaming so the message is persisted even if
+    # the stream fails partway through.
+    await loop.run_in_executor(
+        None, database.add_message, conversation_id, "user", body.message
+    )
+
+    # Build conversation history for the model.
+    # We load previous messages from the database and format them as the
+    # OpenAI-style [{"role": "user", "content": "..."}, ...] array that
+    # Ollama expects. The model uses this history to understand context
+    # for follow-up questions like "what about the second one?" or
+    # "can you explain that differently?"
+    history: list[dict[str, str]] = []
+    for msg in conversation.get("messages", []):
+        if msg["role"] in ("user", "assistant"):
+            history.append({"role": msg["role"], "content": msg["content"]})
+
+    # Check if this is the first message (for auto-titling later)
+    is_first_message = len(history) == 0
+
+    async def event_stream() -> AsyncGenerator[dict[str, str], None]:
+        """Inner generator that yields SSE events.
+
+        EventSourceResponse expects dicts with "event" and "data" keys.
+        Each dict becomes one SSE event sent to the browser.
+        """
+        full_content = ""
+        routing_metadata: dict[str, Any] = {}
+
+        try:
+            async for event in router.route_and_respond(body.message, history):
+                if event["type"] == "routing":
+                    routing_metadata = event
+                    yield {
+                        "event": "routing",
+                        "data": json.dumps(event),
+                    }
+
+                elif event["type"] == "token":
+                    full_content += event["content"]
+                    yield {
+                        "event": "token",
+                        "data": json.dumps(event),
+                    }
+
+                elif event["type"] == "done":
+                    # Save the complete assistant response to the database.
+                    # We store routing metadata alongside the message so it
+                    # can be displayed when the conversation is reloaded.
+                    metadata = {
+                        "model": routing_metadata.get("model", ""),
+                        "route": routing_metadata.get("route", ""),
+                        "reason": routing_metadata.get("reason", ""),
+                        "classify_ms": routing_metadata.get("classify_ms", 0),
+                        "stream_ms": event.get("stream_ms", 0),
+                        "total_ms": event.get("total_ms", 0),
+                    }
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        database.add_message,
+                        conversation_id,
+                        "assistant",
+                        full_content,
+                        metadata,
+                    )
+
+                    yield {
+                        "event": "done",
+                        "data": json.dumps(event),
+                    }
+
+                    # Auto-title: after the first exchange, generate a short
+                    # title so the sidebar shows something meaningful instead
+                    # of "New conversation" for every chat.
+                    if is_first_message:
+                        asyncio.create_task(_auto_title(conversation_id, body.message))
+
+        except Exception as e:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": str(e)}),
+            }
+
+    return EventSourceResponse(event_stream())
+
+
+async def _auto_title(conversation_id: str, first_message: str) -> None:
+    """Generate and save a conversation title from the first message.
+
+    Runs as a background task (asyncio.create_task) so it doesn't block
+    the chat response. Uses the tiny llama3.2:3b model that's already
+    resident in memory, so there's no model-loading delay.
+    """
+    try:
+        title = await router.generate_title(first_message)
+        await asyncio.get_event_loop().run_in_executor(
+            None, database.update_conversation_title, conversation_id, title
+        )
+    except Exception:
+        # Title generation is non-critical — if it fails, the conversation
+        # just keeps its "New conversation" default title. No need to crash.
+        pass
