@@ -99,6 +99,10 @@ SQLite via parent_message_id and branch_from_message_id fields.
   silently change the plan.
 - Test each feature after implementing it. Don't say "done" without
   running the code.
+- After implementing any streaming endpoint, test the FULL flow:
+  send a real message from the browser and verify tokens appear
+  in the UI. Do not consider streaming features done until you
+  see actual output in the browser.
 - When creating the frontend, keep it in a single index.html file.
   Use CSS variables for theming. No external CSS frameworks.
 - CDN libraries allowed: marked.js, highlight.js, DOMPurify. No others

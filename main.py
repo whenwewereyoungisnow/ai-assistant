@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 import database
+import documents
 import models
 import router
 
@@ -90,6 +91,12 @@ class CreateConversationRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+
+
+class SearchRequest(BaseModel):
+    query: str
+    method: Literal["semantic", "keyword"] = "semantic"
+    top_k: int = 5
 
 
 # These conversation endpoints are plain `def` (not `async def`) because they
@@ -270,3 +277,95 @@ async def _auto_title(conversation_id: str, first_message: str) -> None:
         # Title generation is non-critical — if it fails, the conversation
         # just keeps its "New conversation" default title. No need to crash.
         pass
+
+
+# --- Document endpoints ---
+#
+# These endpoints handle the "Documents" mode: uploading PDFs, listing
+# what's been uploaded, searching across document chunks, and deleting
+# documents. The actual processing (text extraction, chunking, embedding)
+# lives in documents.py — these endpoints just wire HTTP to those functions.
+
+
+@app.post("/documents/upload")
+async def upload_document(file: UploadFile) -> dict[str, Any]:
+    """Upload a PDF and process it for search.
+
+    Accepts a multipart file upload, saves it to a temp file, extracts
+    text, chunks it, generates embeddings, and stores everything in memory.
+    Returns a summary with filename, page count, and chunk count.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    # Sanitize the filename to prevent path traversal attacks.
+    # Path.name strips directory components, so "../../evil.pdf" becomes "evil.pdf".
+    safe_name = Path(file.filename).name
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Save the uploaded file to a temp location for PyMuPDF to read.
+    # We use the data/ directory since it already exists for the database.
+    upload_dir = Path(__file__).parent / "data" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = upload_dir / safe_name
+
+    try:
+        content = await file.read()
+
+        # Limit uploads to 50 MB — large enough for any reasonable document,
+        # small enough to prevent accidental memory exhaustion.
+        max_upload_size = 50 * 1024 * 1024
+        if len(content) > max_upload_size:
+            raise HTTPException(status_code=400, detail="File too large (max 50 MB)")
+
+        temp_path.write_bytes(content)
+
+        result = await documents.process_pdf(temp_path, safe_name)
+        return result
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Catch corrupt/encrypted PDFs, Ollama failures, etc. so the user
+        # gets a clear 400 instead of an opaque 500 error.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not process PDF: {e}",
+        )
+    finally:
+        # Clean up the temp file — we've already extracted the text and
+        # embeddings, so we don't need the PDF on disk anymore.
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@app.get("/documents")
+def list_documents() -> list[dict[str, Any]]:
+    """List all uploaded documents with their stats."""
+    return documents.list_documents()
+
+
+@app.delete("/documents/{filename}", status_code=204)
+def delete_document(filename: str) -> None:
+    """Remove a document and all its chunks."""
+    deleted = documents.delete_document(filename)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+
+@app.post("/documents/search")
+async def search_documents(body: SearchRequest) -> list[dict[str, Any]]:
+    """Search across all uploaded documents.
+
+    Accepts a query string and search method (semantic or keyword).
+    Returns the top_k most relevant chunks with scores and metadata.
+    """
+    return await documents.search_chunks(
+        query=body.query, method=body.method, top_k=body.top_k
+    )
