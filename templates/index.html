@@ -129,6 +129,12 @@
             margin-top: 2px;
         }
 
+        .conversation-mode-badge {
+            font-size: 10px;
+            color: var(--accent);
+            margin-top: 1px;
+        }
+
         .delete-btn {
             background: none;
             border: none;
@@ -195,6 +201,212 @@
             cursor: not-allowed;
         }
 
+        /* --- Document panel (shown in documents mode) --- */
+        .doc-panel {
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-secondary);
+            padding: 12px 20px;
+            display: none;
+        }
+
+        .doc-panel.visible {
+            display: block;
+        }
+
+        .doc-panel-inner {
+            max-width: 780px;
+            margin: 0 auto;
+        }
+
+        /* Drag-and-drop upload zone */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+            margin-bottom: 10px;
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--accent);
+            background: rgba(74, 158, 255, 0.05);
+        }
+
+        .upload-zone-text {
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .upload-zone-text strong {
+            color: var(--accent);
+        }
+
+        .upload-progress {
+            font-size: 12px;
+            color: var(--accent);
+            margin-top: 6px;
+        }
+
+        /* Uploaded document list */
+        .doc-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .doc-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--bg-tertiary);
+            border-radius: 6px;
+            font-size: 12px;
+        }
+
+        .doc-item-name {
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .doc-item-stats {
+            color: var(--text-muted);
+        }
+
+        .doc-item-delete {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 12px;
+            padding: 0 2px;
+        }
+
+        .doc-item-delete:hover {
+            color: var(--danger);
+        }
+
+        /* --- Sources section in messages --- */
+        .sources-section {
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            max-width: 780px;
+            width: 100%;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .sources-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: rgba(74, 158, 255, 0.08);
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--accent);
+            border: none;
+            width: 100%;
+            text-align: left;
+        }
+
+        .sources-header:hover {
+            background: rgba(74, 158, 255, 0.12);
+        }
+
+        .sources-body {
+            display: none;
+            padding: 8px;
+            gap: 6px;
+            flex-direction: column;
+        }
+
+        .sources-body.open {
+            display: flex;
+        }
+
+        .source-card {
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font-size: 12px;
+        }
+
+        .source-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .source-card-file {
+            color: var(--accent);
+            font-weight: 500;
+        }
+
+        .source-card-page {
+            color: var(--text-muted);
+        }
+
+        .source-card-score {
+            color: var(--success);
+            margin-left: auto;
+        }
+
+        .source-card-text {
+            color: var(--text-secondary);
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            cursor: pointer;
+        }
+
+        .source-card-text.expanded {
+            display: block;
+            -webkit-line-clamp: unset;
+        }
+
+        /* Searching indicator shown before sources arrive */
+        .searching-indicator {
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 10px 16px;
+            color: var(--accent);
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .searching-indicator .dot-pulse {
+            display: inline-flex;
+            gap: 4px;
+        }
+
+        .searching-indicator .dot-pulse span {
+            width: 5px;
+            height: 5px;
+            background: var(--accent);
+            border-radius: 50%;
+            animation: dotPulse 1.2s infinite;
+        }
+
+        .searching-indicator .dot-pulse span:nth-child(2) { animation-delay: 0.2s; }
+        .searching-indicator .dot-pulse span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes dotPulse {
+            0%, 100% { opacity: 0.3; }
+            50% { opacity: 1; }
+        }
+
         /* --- Messages area --- */
         .messages {
             flex: 1;
@@ -256,9 +468,7 @@
             color: var(--success);
         }
 
-        /* Routing badge shows which model answered and why.
-           This is key for learning — you can see the classifier's
-           decision-making in real time. */
+        /* Routing badge shows which model answered and why. */
         .routing-badge {
             display: inline-flex;
             align-items: center;
@@ -293,13 +503,8 @@
         }
 
         /* Markdown content styling */
-        .message-content p {
-            margin-bottom: 8px;
-        }
-
-        .message-content p:last-child {
-            margin-bottom: 0;
-        }
+        .message-content p { margin-bottom: 8px; }
+        .message-content p:last-child { margin-bottom: 0; }
 
         .message-content pre {
             background: #0d1117;
@@ -322,14 +527,8 @@
             font-size: 0.9em;
         }
 
-        .message-content ul, .message-content ol {
-            margin: 8px 0;
-            padding-left: 24px;
-        }
-
-        .message-content li {
-            margin-bottom: 4px;
-        }
+        .message-content ul, .message-content ol { margin: 8px 0; padding-left: 24px; }
+        .message-content li { margin-bottom: 4px; }
 
         .message-content blockquote {
             border-left: 3px solid var(--accent);
@@ -338,70 +537,30 @@
             margin: 8px 0;
         }
 
-        .message-content h1, .message-content h2, .message-content h3 {
-            margin: 12px 0 8px 0;
-        }
+        .message-content h1, .message-content h2, .message-content h3 { margin: 12px 0 8px 0; }
 
-        .message-content table {
-            border-collapse: collapse;
-            margin: 8px 0;
-            width: 100%;
-        }
+        .message-content table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+        .message-content th, .message-content td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
+        .message-content th { background: rgba(255, 255, 255, 0.05); }
+        .message-content a { color: var(--accent); }
 
-        .message-content th, .message-content td {
-            border: 1px solid var(--border);
-            padding: 6px 12px;
-            text-align: left;
-        }
-
-        .message-content th {
-            background: rgba(255, 255, 255, 0.05);
-        }
-
-        .message-content a {
-            color: var(--accent);
-        }
-
-        /* Thinking blocks from deepseek-r1 — collapsible so they don't
-           clutter the response. The model wraps its reasoning in
-           <think>...</think> tags which we parse and display here. */
-        .thinking-block {
-            margin: 8px 0;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-        }
+        /* Thinking blocks from deepseek-r1 */
+        .thinking-block { margin: 8px 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 
         .thinking-toggle {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 8px 12px;
-            background: rgba(255, 255, 255, 0.03);
-            cursor: pointer;
-            font-size: 12px;
-            color: var(--text-muted);
-            width: 100%;
-            border: none;
-            text-align: left;
+            display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.03); cursor: pointer; font-size: 12px;
+            color: var(--text-muted); width: 100%; border: none; text-align: left;
         }
 
-        .thinking-toggle:hover {
-            background: rgba(255, 255, 255, 0.06);
-        }
+        .thinking-toggle:hover { background: rgba(255, 255, 255, 0.06); }
 
         .thinking-content {
-            padding: 8px 12px;
-            font-size: 13px;
-            color: var(--text-secondary);
-            border-top: 1px solid var(--border);
-            display: none;
-            white-space: pre-wrap;
+            padding: 8px 12px; font-size: 13px; color: var(--text-secondary);
+            border-top: 1px solid var(--border); display: none; white-space: pre-wrap;
         }
 
-        .thinking-content.open {
-            display: block;
-        }
+        .thinking-content.open { display: block; }
 
         /* Timing info shown after response completes */
         .timing-info {
@@ -442,9 +601,7 @@
             transition: border-color 0.15s;
         }
 
-        .input-wrapper textarea:focus {
-            border-color: var(--accent);
-        }
+        .input-wrapper textarea:focus { border-color: var(--accent); }
 
         .send-btn {
             padding: 10px 20px;
@@ -459,14 +616,8 @@
             height: 44px;
         }
 
-        .send-btn:hover {
-            background: var(--accent-hover);
-        }
-
-        .send-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
+        .send-btn:hover { background: var(--accent-hover); }
+        .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         /* --- Streaming indicator --- */
         .streaming-indicator {
@@ -484,7 +635,7 @@
             50% { opacity: 0.2; }
         }
 
-        /* --- "Coming soon" toast for disabled modes --- */
+        /* --- Toast --- */
         .toast {
             position: fixed;
             bottom: 80px;
@@ -502,34 +653,18 @@
             z-index: 100;
         }
 
-        .toast.show {
-            opacity: 1;
-        }
+        .toast.show { opacity: 1; }
 
         /* --- Responsive: hide sidebar on small screens --- */
         @media (max-width: 700px) {
-            .sidebar {
-                display: none;
-            }
+            .sidebar { display: none; }
         }
 
         /* Scrollbar styling */
-        ::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: var(--border);
-            border-radius: 3px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: var(--text-muted);
-        }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
     </style>
 </head>
 <body>
@@ -544,20 +679,34 @@
 
     <!-- Main chat area -->
     <div class="main">
-        <!-- Mode selector — only Chat is active for now.
-             The others are wired up to show "Coming soon" so the UI
-             is ready when we build those features in later steps. -->
+        <!-- Mode selector — Chat and Documents are active.
+             Writing and Vision still show "Coming soon". -->
         <div class="mode-bar">
             <button class="mode-btn active" data-mode="chat">Chat</button>
-            <button class="mode-btn disabled" data-mode="documents">Documents</button>
+            <button class="mode-btn" data-mode="documents">Documents</button>
             <button class="mode-btn disabled" data-mode="writing">Writing</button>
             <button class="mode-btn disabled" data-mode="vision">Vision</button>
         </div>
 
+        <!-- Document panel — shown only in documents mode.
+             Contains the upload area and list of uploaded documents. -->
+        <div class="doc-panel" id="docPanel">
+            <div class="doc-panel-inner">
+                <div class="upload-zone" id="uploadZone">
+                    <div class="upload-zone-text">
+                        <strong>Drop a PDF here</strong> or click to upload
+                    </div>
+                    <div class="upload-progress" id="uploadProgress"></div>
+                    <input type="file" id="fileInput" accept=".pdf" style="display: none">
+                </div>
+                <div class="doc-list" id="docList"></div>
+            </div>
+        </div>
+
         <div class="messages" id="messages">
-            <div class="welcome">
+            <div class="welcome" id="welcome">
                 <h2>AI Assistant</h2>
-                <p>Ask me anything. I'll route your question to the best model automatically.</p>
+                <p id="welcomeText">Ask me anything. I'll route your question to the best model automatically.</p>
             </div>
         </div>
 
@@ -579,10 +728,10 @@
         // State
         // =========================================================
         let currentConversationId = null;
+        let currentMode = 'chat';
         let isStreaming = false;
 
         // Configure marked.js for markdown rendering.
-        // highlight callback tells marked to use highlight.js for code blocks.
         marked.setOptions({
             highlight: function(code, lang) {
                 if (lang && hljs.getLanguage(lang)) {
@@ -592,6 +741,47 @@
             },
             breaks: true,
         });
+
+        // =========================================================
+        // Mode switching
+        // =========================================================
+
+        const WELCOME_MESSAGES = {
+            chat: "Ask me anything. I'll route your question to the best model automatically.",
+            documents: "Upload PDFs and ask questions about them. I'll search your documents and cite sources.",
+        };
+
+        function switchMode(mode) {
+            if (mode === currentMode) return;
+            // Block mode switching while a response is streaming — otherwise
+            // the SSE reader keeps writing to removed DOM elements.
+            if (isStreaming) {
+                showToast('Please wait for the current response to finish.');
+                return;
+            }
+            currentMode = mode;
+
+            // Update mode buttons
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            document.querySelector(`.mode-btn[data-mode="${mode}"]`).classList.add('active');
+
+            // Show/hide document panel
+            document.getElementById('docPanel').classList.toggle('visible', mode === 'documents');
+
+            // Update placeholder text
+            document.getElementById('userInput').placeholder =
+                mode === 'documents' ? 'Ask about your documents...' : 'Type a message...';
+
+            // Reset conversation and reload sidebar for this mode
+            currentConversationId = null;
+            clearMessages();
+            loadConversations();
+
+            // Load document list when switching to documents mode
+            if (mode === 'documents') {
+                loadDocuments();
+            }
+        }
 
         // =========================================================
         // Conversations
@@ -605,15 +795,15 @@
 
         function renderConversationList(conversations) {
             const list = document.getElementById('conversationList');
-            // Filter to only show chat conversations in chat mode
-            const chatConversations = conversations.filter(c => c.mode === 'chat');
+            // Filter to only show conversations for the current mode
+            const filtered = conversations.filter(c => c.mode === currentMode);
 
-            if (chatConversations.length === 0) {
+            if (filtered.length === 0) {
                 list.innerHTML = '<div style="padding: 16px; color: var(--text-muted); font-size: 13px; text-align: center;">No conversations yet</div>';
                 return;
             }
 
-            list.innerHTML = chatConversations.map(c => `
+            list.innerHTML = filtered.map(c => `
                 <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
                      onclick="loadConversation('${c.id}')">
                     <div class="conversation-item-info">
@@ -629,7 +819,7 @@
             const res = await fetch('/conversations', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: 'chat' }),
+                body: JSON.stringify({ mode: currentMode }),
             });
             const data = await res.json();
             currentConversationId = data.id;
@@ -641,8 +831,19 @@
             currentConversationId = id;
             const res = await fetch(`/conversations/${id}`);
             const conversation = await res.json();
+
+            // Sync mode to match the loaded conversation so the UI stays
+            // consistent (e.g. document panel visibility, sidebar filtering).
+            if (conversation.mode && conversation.mode !== currentMode) {
+                currentMode = conversation.mode;
+                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+                document.querySelector(`.mode-btn[data-mode="${conversation.mode}"]`).classList.add('active');
+                document.getElementById('docPanel').classList.toggle('visible', conversation.mode === 'documents');
+                if (conversation.mode === 'documents') loadDocuments();
+            }
+
             renderMessages(conversation.messages);
-            await loadConversations(); // re-render to update active state
+            await loadConversations();
         }
 
         async function deleteConversation(id) {
@@ -655,14 +856,108 @@
         }
 
         // =========================================================
+        // Documents management
+        // =========================================================
+
+        async function loadDocuments() {
+            const res = await fetch('/documents');
+            const docs = await res.json();
+            renderDocumentList(docs);
+        }
+
+        function renderDocumentList(docs) {
+            const list = document.getElementById('docList');
+            if (docs.length === 0) {
+                list.innerHTML = '';
+                return;
+            }
+            list.innerHTML = docs.map(d => `
+                <div class="doc-item">
+                    <span class="doc-item-name">${escapeHtml(d.filename)}</span>
+                    <span class="doc-item-stats">${d.pages} pages, ${d.chunks} chunks</span>
+                    <button class="doc-item-delete" onclick="deleteDocument('${escapeHtml(d.filename).replace(/'/g, "\\'")}')" title="Remove">&#x2715;</button>
+                </div>
+            `).join('');
+        }
+
+        async function uploadDocument(file) {
+            const progress = document.getElementById('uploadProgress');
+            progress.textContent = `Processing ${file.name}...`;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const res = await fetch('/documents/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                if (!res.ok) {
+                    const err = await res.json();
+                    showToast(err.detail || 'Upload failed');
+                    progress.textContent = '';
+                    return;
+                }
+
+                const result = await res.json();
+                const replacedMsg = result.replaced ? ' (replaced)' : '';
+                progress.textContent = `${result.filename}: ${result.pages} pages, ${result.chunks} chunks${replacedMsg}`;
+                setTimeout(() => { progress.textContent = ''; }, 3000);
+
+                await loadDocuments();
+            } catch (err) {
+                showToast('Upload error: ' + err.message);
+                progress.textContent = '';
+            }
+        }
+
+        async function deleteDocument(filename) {
+            await fetch(`/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+            await loadDocuments();
+        }
+
+        // --- Upload zone event handlers ---
+
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                uploadDocument(e.target.files[0]);
+                fileInput.value = '';
+            }
+        });
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length > 0) {
+                uploadDocument(e.dataTransfer.files[0]);
+            }
+        });
+
+        // =========================================================
         // Messages
         // =========================================================
 
         function clearMessages() {
+            const welcomeText = WELCOME_MESSAGES[currentMode] || WELCOME_MESSAGES.chat;
             document.getElementById('messages').innerHTML = `
-                <div class="welcome">
+                <div class="welcome" id="welcome">
                     <h2>AI Assistant</h2>
-                    <p>Ask me anything. I'll route your question to the best model automatically.</p>
+                    <p id="welcomeText">${welcomeText}</p>
                 </div>`;
         }
 
@@ -671,6 +966,12 @@
             container.innerHTML = '';
 
             for (const msg of messages) {
+                // For assistant messages with sources metadata, render sources
+                // section above the response. This handles both live streaming
+                // and reloading saved conversations from the database.
+                if (msg.role === 'assistant' && msg.metadata && msg.metadata.sources && msg.metadata.sources.length > 0) {
+                    container.appendChild(createSourcesElement(msg.metadata.sources));
+                }
                 const el = createMessageElement(msg.role, msg.content, msg.metadata);
                 container.appendChild(el);
             }
@@ -686,11 +987,20 @@
             let headerHtml = `<span class="message-role ${role}">${role}</span>`;
 
             if (role === 'assistant' && metadata) {
-                headerHtml += `
-                    <span class="routing-badge">
-                        <span class="model-name">${escapeHtml(metadata.model || '')}</span>
-                        <span>${escapeHtml(metadata.reason || '')}</span>
-                    </span>`;
+                // Show routing badge for chat mode (has "reason"), or model badge for documents
+                if (metadata.reason) {
+                    headerHtml += `
+                        <span class="routing-badge">
+                            <span class="model-name">${escapeHtml(metadata.model || '')}</span>
+                            <span>${escapeHtml(metadata.reason || '')}</span>
+                        </span>`;
+                } else if (metadata.model) {
+                    headerHtml += `
+                        <span class="routing-badge">
+                            <span class="model-name">${escapeHtml(metadata.model || '')}</span>
+                            <span>document Q&A</span>
+                        </span>`;
+                }
             }
 
             div.innerHTML = `
@@ -702,7 +1012,10 @@
             if (role === 'assistant' && metadata && metadata.total_ms) {
                 const timing = document.createElement('div');
                 timing.className = 'timing-info';
-                timing.textContent = `${(metadata.total_ms / 1000).toFixed(1)}s total · ${(metadata.stream_ms / 1000).toFixed(1)}s generation · routed in ${metadata.classify_ms}ms`;
+                const parts = [`${(metadata.total_ms / 1000).toFixed(1)}s total`];
+                if (metadata.stream_ms) parts.push(`${(metadata.stream_ms / 1000).toFixed(1)}s generation`);
+                if (metadata.classify_ms) parts.push(`routed in ${metadata.classify_ms}ms`);
+                timing.textContent = parts.join(' \u00b7 ');
                 div.appendChild(timing);
             }
 
@@ -710,24 +1023,54 @@
         }
 
         /**
+         * Create a collapsible sources section to show which document chunks
+         * were found. Used both during live streaming (when the "sources" SSE
+         * event arrives) and when reloading saved conversations from the database.
+         */
+        function createSourcesElement(sources) {
+            const section = document.createElement('div');
+            section.className = 'sources-section';
+
+            const id = 'src-' + Math.random().toString(36).substring(2, 9);
+
+            // Build source cards HTML
+            const cardsHtml = sources.map(s => `
+                <div class="source-card">
+                    <div class="source-card-header">
+                        <span class="source-card-file">${escapeHtml(s.filename)}</span>
+                        <span class="source-card-page">page ${s.page}</span>
+                        <span class="source-card-score">${(s.score * 100).toFixed(0)}% match</span>
+                    </div>
+                    <div class="source-card-text" onclick="this.classList.toggle('expanded')">${escapeHtml(s.text)}</div>
+                </div>
+            `).join('');
+
+            // We build this HTML ourselves (not from model output), so no XSS risk.
+            // Using onclick for the toggle — same DOMPurify bypass pattern as <think> blocks.
+            section.innerHTML = `
+                <button class="sources-header" onclick="document.getElementById('${id}').classList.toggle('open'); this.querySelector('.arrow').textContent = document.getElementById('${id}').classList.contains('open') ? '\u25BC' : '\u25B6'">
+                    <span class="arrow">\u25B6</span> ${sources.length} sources found
+                </button>
+                <div class="sources-body" id="${id}">
+                    ${cardsHtml}
+                </div>
+            `;
+
+            return section;
+        }
+
+        /**
          * Render markdown content safely.
-         * marked.js converts markdown → HTML, then DOMPurify strips any
-         * dangerous tags/attributes (XSS protection). This is important
-         * because model output is untrusted — a model could theoretically
-         * output <script> tags in its response.
+         * marked.js converts markdown -> HTML, then DOMPurify strips any
+         * dangerous tags/attributes (XSS protection).
          *
          * We also handle deepseek-r1's <think>...</think> blocks here,
-         * converting them into collapsible sections so the reasoning
-         * process is visible but not overwhelming.
+         * converting them into collapsible sections.
          */
         function renderMarkdown(text) {
             if (!text) return '';
 
             // Extract <think> blocks BEFORE markdown + sanitization.
-            // Why? DOMPurify strips inline onclick handlers (for XSS safety),
-            // which would break our collapsible toggle buttons. So we replace
-            // <think> blocks with placeholders, run marked + DOMPurify on the
-            // safe text, then re-insert our trusted HTML afterwards.
             const thinkBlocks = [];
             text = text.replace(/<think>([\s\S]*?)<\/think>/g, (match, thinkContent) => {
                 const id = 'think-' + Math.random().toString(36).substring(2, 9);
@@ -737,8 +1080,7 @@
 
             let html = DOMPurify.sanitize(marked.parse(text));
 
-            // Re-insert thinking blocks after sanitization. These are our own
-            // trusted HTML (not model output), so there's no XSS risk.
+            // Re-insert thinking blocks after sanitization.
             thinkBlocks.forEach((block, i) => {
                 html = html.replace(`%%THINK_${i}%%`, `
                     <div class="thinking-block">
@@ -767,7 +1109,7 @@
                 const res = await fetch('/conversations', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: 'chat' }),
+                    body: JSON.stringify({ mode: currentMode }),
                 });
                 const data = await res.json();
                 currentConversationId = data.id;
@@ -787,10 +1129,18 @@
             input.style.height = 'auto';
             scrollToBottom();
 
+            // In documents mode, show a "Searching documents..." indicator
+            // while the backend searches for relevant chunks.
+            let searchingEl = null;
+            if (currentMode === 'documents') {
+                searchingEl = document.createElement('div');
+                searchingEl.className = 'searching-indicator';
+                searchingEl.innerHTML = 'Searching documents... <span class="dot-pulse"><span></span><span></span><span></span></span>';
+                messagesContainer.appendChild(searchingEl);
+                scrollToBottom();
+            }
+
             // Start streaming the response.
-            // We use fetch() + ReadableStream instead of EventSource because
-            // the browser's EventSource API only supports GET requests, but
-            // our chat endpoint is POST (it sends the message in the body).
             isStreaming = true;
             document.getElementById('sendBtn').disabled = true;
 
@@ -804,14 +1154,11 @@
                 if (!res.ok) {
                     const err = await res.json();
                     showToast(err.detail || err.error || 'Something went wrong');
+                    if (searchingEl) searchingEl.remove();
                     return;
                 }
 
                 // Parse the SSE stream manually.
-                // SSE format: each event is "event: type\r\ndata: json\r\n\r\n"
-                // sse-starlette uses \r\n (HTTP standard), so we normalize to \n
-                // before splitting. We also skip SSE comment lines (": ping ...")
-                // that sse-starlette sends as keep-alives during model loading.
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
 
@@ -826,26 +1173,16 @@
                     if (done) break;
 
                     // Normalize \r\n to \n so the split below works consistently.
-                    // HTTP uses \r\n, but splitting on \n\n wouldn't match \r\n\r\n.
                     buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
-                    // SSE events are separated by double newlines.
-                    // Each event has "event: <type>\ndata: <json>"
                     const parts = buffer.split('\n\n');
-                    // Keep the last part — it might be incomplete
                     buffer = parts.pop();
 
                     for (const part of parts) {
                         if (!part.trim()) continue;
-
-                        // Skip SSE comments (lines starting with ":").
-                        // sse-starlette sends ": ping" as keep-alive during
-                        // slow model loading. These aren't events.
                         if (part.trim().startsWith(':')) continue;
 
                         let eventType = 'message';
-                        // Collect all data: lines and join them — the SSE spec
-                        // allows multi-line data by sending multiple data: lines.
                         const dataLines = [];
 
                         for (const line of part.split('\n')) {
@@ -866,8 +1203,8 @@
                             continue;
                         }
 
+                        // --- Chat mode: routing event ---
                         if (eventType === 'routing') {
-                            // Create the assistant message element with routing info
                             metadata = parsed;
                             assistantDiv = document.createElement('div');
                             assistantDiv.className = 'message assistant';
@@ -888,24 +1225,64 @@
                             scrollToBottom();
                         }
 
+                        // --- Documents mode: sources event ---
+                        // The backend sends the search results before streaming tokens.
+                        // We display them in a collapsible section so the user sees
+                        // what was found while the model generates its answer.
+                        else if (eventType === 'sources') {
+                            if (searchingEl) {
+                                searchingEl.remove();
+                                searchingEl = null;
+                            }
+
+                            const sources = parsed.sources || [];
+                            const ragModel = parsed.model || 'document Q&A';
+                            metadata = { sources, model: ragModel };
+
+                            // Show sources section
+                            if (sources.length > 0) {
+                                messagesContainer.appendChild(createSourcesElement(sources));
+                            }
+
+                            // Create assistant message div for the streamed response
+                            assistantDiv = document.createElement('div');
+                            assistantDiv.className = 'message assistant';
+                            assistantDiv.innerHTML = `
+                                <div class="message-header">
+                                    <span class="message-role assistant">assistant</span>
+                                    <span class="routing-badge">
+                                        <span class="model-name">${escapeHtml(ragModel)}</span>
+                                        <span>document Q&A</span>
+                                    </span>
+                                </div>
+                                <div class="message-content"><span class="streaming-indicator"></span></div>
+                            `;
+
+                            contentDiv = assistantDiv.querySelector('.message-content');
+                            messagesContainer.appendChild(assistantDiv);
+                            scrollToBottom();
+                        }
+
+                        // --- Shared: token event ---
                         else if (eventType === 'token') {
                             fullContent += parsed.content;
                             if (contentDiv) {
-                                // Re-render the full markdown on each token.
-                                // This is simpler than trying to append markdown
-                                // incrementally (which breaks with partial syntax).
-                                // Performance is fine because marked.js is fast.
                                 contentDiv.innerHTML = renderMarkdown(fullContent) +
                                     '<span class="streaming-indicator"></span>';
                                 scrollToBottom();
                             }
                         }
 
+                        // --- Shared: done event ---
                         else if (eventType === 'done') {
+                            // Remove searching indicator if still showing
+                            if (searchingEl) {
+                                searchingEl.remove();
+                                searchingEl = null;
+                            }
+
                             if (contentDiv) {
-                                // Final render without the blinking cursor
                                 contentDiv.innerHTML = renderMarkdown(fullContent);
-                                // Re-highlight code blocks after final render
                                 contentDiv.querySelectorAll('pre code').forEach(block => {
                                     hljs.highlightElement(block);
                                 });
@@ -915,21 +1292,27 @@
                             if (assistantDiv && parsed.total_ms) {
                                 const timing = document.createElement('div');
                                 timing.className = 'timing-info';
-                                timing.textContent = `${(parsed.total_ms / 1000).toFixed(1)}s total · ${(parsed.stream_ms / 1000).toFixed(1)}s generation · routed in ${metadata.classify_ms}ms`;
+                                const timeParts = [`${(parsed.total_ms / 1000).toFixed(1)}s total`];
+                                if (parsed.stream_ms) timeParts.push(`${(parsed.stream_ms / 1000).toFixed(1)}s generation`);
+                                if (metadata.classify_ms) timeParts.push(`routed in ${metadata.classify_ms}ms`);
+                                timing.textContent = timeParts.join(' \u00b7 ');
                                 assistantDiv.appendChild(timing);
                             }
 
-                            // Refresh sidebar now, then again after a delay to catch
-                            // the auto-generated title. Title generation runs as a
-                            // background task on the backend, so it likely hasn't
-                            // finished by the time the stream ends.
                             await loadConversations();
                             setTimeout(() => loadConversations(), 2500);
                         }
 
+                        // --- Shared: error event ---
                         else if (eventType === 'error') {
+                            if (searchingEl) {
+                                searchingEl.remove();
+                                searchingEl = null;
+                            }
                             if (contentDiv) {
                                 contentDiv.innerHTML = `<span style="color: var(--danger)">Error: ${escapeHtml(parsed.error)}</span>`;
+                            } else {
+                                showToast('Error: ' + parsed.error);
                             }
                         }
                     }
@@ -939,6 +1322,7 @@
             } finally {
                 isStreaming = false;
                 document.getElementById('sendBtn').disabled = false;
+                if (searchingEl) searchingEl.remove();
             }
         }
 
@@ -947,7 +1331,6 @@
         // =========================================================
 
         function handleKeydown(e) {
-            // Enter sends, Shift+Enter adds a new line
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
@@ -964,11 +1347,10 @@
         document.querySelectorAll('.mode-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 if (btn.classList.contains('disabled')) {
-                    showToast(`${btn.dataset.mode} mode — coming soon!`);
+                    showToast(`${btn.dataset.mode} mode \u2014 coming soon!`);
                     return;
                 }
-                document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
+                switchMode(btn.dataset.mode);
             });
         });
 
@@ -994,11 +1376,6 @@
             setTimeout(() => toast.classList.remove('show'), 3000);
         }
 
-        /**
-         * Convert an ISO timestamp to a relative time string like "5 min ago".
-         * We parse the timestamp as UTC (the database stores UTC) and compare
-         * to the current time.
-         */
         function timeAgo(isoString) {
             const date = new Date(isoString);
             const now = new Date();
@@ -1015,7 +1392,6 @@
         // Init
         // =========================================================
 
-        // Load conversations when the page loads
         loadConversations();
     </script>
 </body>

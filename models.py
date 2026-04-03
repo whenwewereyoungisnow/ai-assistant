@@ -82,18 +82,32 @@ async def stream_chat(
     if options:
         merged_options.update(options)
 
+    # "think" controls whether the model runs a chain-of-thought reasoning
+    # step before responding. Ollama expects "think" as a TOP-LEVEL parameter,
+    # not inside "options". If it's inside options, Ollama silently ignores it
+    # during streaming — the model still thinks (putting content in the
+    # "message.thinking" field instead of "message.content"), so stream_chat
+    # yields nothing until thinking finishes. Extracting it here fixes that.
+    think = merged_options.pop("think", None)
+
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": True,
         "options": merged_options,
     }
+    if think is not None:
+        payload["think"] = think
 
     # We use stream() to read the response line-by-line as Ollama sends it.
     # Each line is a JSON object with a "message.content" field containing
     # one token. The last line has "done": true.
     async with get_client().stream("POST", "/api/chat", json=payload) as response:
-        response.raise_for_status()
+        if response.status_code != 200:
+            await response.aread()
+            raise RuntimeError(
+                f"Ollama returned {response.status_code}: {response.text}"
+            )
         async for line in response.aiter_lines():
             if not line:
                 continue
@@ -128,15 +142,21 @@ async def chat(
     if options:
         merged_options.update(options)
 
+    # Extract "think" to top level — same reason as in stream_chat above.
+    think = merged_options.pop("think", None)
+
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": False,
         "options": merged_options,
     }
+    if think is not None:
+        payload["think"] = think
 
     response = await get_client().post("/api/chat", json=payload)
-    response.raise_for_status()
+    if response.status_code != 200:
+        raise RuntimeError(f"Ollama returned {response.status_code}: {response.text}")
     data = response.json()
     if "error" in data:
         raise RuntimeError(f"Ollama error: {data['error']}")
@@ -189,8 +209,15 @@ async def classify(question: str, routes: list[dict[str, str]]) -> dict[str, str
         # Strip those so json.loads() can parse the actual JSON inside.
         cleaned = raw.strip()
         if cleaned.startswith("```"):
+            # Drop only the opening fence (first line) and closing fence (last
+            # line) rather than filtering every line that contains ```.  The old
+            # approach could accidentally strip content if the JSON value itself
+            # contained backticks.
             lines = cleaned.split("\n")
-            lines = [line for line in lines if not line.strip().startswith("```")]
+            if lines[-1].strip().startswith("```"):
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
             cleaned = "\n".join(lines)
         result = json.loads(cleaned)
         # Validate the response has the expected keys

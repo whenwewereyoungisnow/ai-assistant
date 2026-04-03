@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -61,9 +62,15 @@ async def ollama_http_error(
 
 # Serve the frontend. FileResponse sends a static file directly — no
 # template engine needed since the frontend is pure HTML + JS.
+# We set Cache-Control: no-store so the browser always fetches the latest
+# version during development. Without this, you can end up debugging a
+# cached old page that doesn't have your latest JS changes.
 @app.get("/")
 async def root() -> FileResponse:
-    return FileResponse(TEMPLATES_DIR / "index.html")
+    return FileResponse(
+        TEMPLATES_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/health")
@@ -138,16 +145,45 @@ def delete_conversation(conversation_id: str) -> None:
 
 # --- Chat endpoint (SSE streaming) ---
 #
-# How this works end-to-end:
+# How the same /chat endpoint handles both modes:
+# The endpoint checks the conversation's mode from the database and branches:
+# - "chat" mode: classify the question → pick the best model → stream response
+# - "documents" mode: search uploaded documents → build RAG prompt → stream response
+#
+# Both modes share the same SSE plumbing (token/done events) and conversation
+# storage. The frontend always POSTs to the same URL regardless of mode —
+# the backend decides what to do based on the conversation's mode field.
+#
+# Flow:
 # 1. Frontend sends POST /chat/{id} with {"message": "user's question"}
 # 2. We save the user message to the database immediately
-# 3. We load conversation history from the database so the model has context
-# 4. router.route_and_respond() classifies the question, picks a model,
-#    and streams the response token by token
-# 5. We wrap that stream in an EventSourceResponse (SSE) so the frontend
-#    receives events in real time
-# 6. After streaming completes, we save the full assistant response to the DB
-# 7. If this is the first message, we auto-generate a title in the background
+# 3. We load conversation history from the database
+# 4. Branch by mode:
+#    - Chat: router.route_and_respond() classifies and streams
+#    - Documents: search chunks → yield sources → stream RAG response
+# 5. Save the assistant message with mode-specific metadata
+# 6. If first message, auto-generate a title
+
+
+# The RAG system prompt is intentionally different from the chat system prompt.
+# Chat mode says "be helpful, use markdown" — the model can use general knowledge.
+# Documents mode is constrained: only answer from the provided excerpts, cite
+# sources, and say "I don't know" if the answer isn't in the excerpts. This
+# distinction matters because users expect document Q&A to be grounded in their
+# actual documents, not hallucinated from the model's training data.
+RAG_SYSTEM_PROMPT = (
+    "You are a helpful assistant that answers questions based on the "
+    "provided document excerpts. Only use information from the excerpts. "
+    "If the answer isn't in the excerpts, say so clearly. "
+    "Always cite the source document and page number when referencing "
+    'information (e.g., "According to report.pdf, page 3..."). '
+    "Use markdown formatting when it helps readability."
+)
+
+# Documents mode always uses the general model — no classification needed
+# because we're just answering questions about document content.
+RAG_MODEL = "qwen3.5:35b-a3b-coding-nvfp4"
+RAG_MODEL_OPTIONS: dict[str, Any] = {"think": False}
 
 
 @app.post("/chat/{conversation_id}")
@@ -155,7 +191,8 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
     """Send a message and stream the AI response via Server-Sent Events.
 
     The response is a stream of SSE events:
-    - event: routing  → which model was chosen and why
+    - event: routing  → (chat mode) which model was chosen and why
+    - event: sources  → (documents mode) relevant document chunks found
     - event: token    → one token of the response
     - event: done     → timing stats (response is complete)
     - event: error    → something went wrong
@@ -167,7 +204,7 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
     # FastAPI auto-threads plain `def` endpoints (see the CRUD endpoints
     # above), but since this endpoint is `async def` (required for SSE),
     # we need to handle it manually.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     conversation = await loop.run_in_executor(
         None, database.get_conversation, conversation_id
     )
@@ -194,71 +231,241 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
 
     # Check if this is the first message (for auto-titling later)
     is_first_message = len(history) == 0
+    mode = conversation.get("mode", "chat")
 
-    async def event_stream() -> AsyncGenerator[dict[str, str], None]:
-        """Inner generator that yields SSE events.
+    if mode == "documents":
+        return EventSourceResponse(
+            _documents_event_stream(
+                conversation_id, body.message, history, is_first_message
+            )
+        )
+    else:
+        return EventSourceResponse(
+            _chat_event_stream(conversation_id, body.message, history, is_first_message)
+        )
 
-        EventSourceResponse expects dicts with "event" and "data" keys.
-        Each dict becomes one SSE event sent to the browser.
-        """
-        full_content = ""
-        routing_metadata: dict[str, Any] = {}
 
-        try:
-            async for event in router.route_and_respond(body.message, history):
-                if event["type"] == "routing":
-                    routing_metadata = event
-                    yield {
-                        "event": "routing",
-                        "data": json.dumps(event),
-                    }
+async def _chat_event_stream(
+    conversation_id: str,
+    message: str,
+    history: list[dict[str, str]],
+    is_first_message: bool,
+) -> AsyncGenerator[dict[str, str], None]:
+    """SSE event stream for chat mode (smart routing).
 
-                elif event["type"] == "token":
-                    full_content += event["content"]
-                    yield {
-                        "event": "token",
-                        "data": json.dumps(event),
-                    }
+    EventSourceResponse expects dicts with "event" and "data" keys.
+    Each dict becomes one SSE event sent to the browser.
+    """
+    full_content = ""
+    routing_metadata: dict[str, Any] = {}
 
-                elif event["type"] == "done":
-                    # Save the complete assistant response to the database.
-                    # We store routing metadata alongside the message so it
-                    # can be displayed when the conversation is reloaded.
-                    metadata = {
-                        "model": routing_metadata.get("model", ""),
-                        "route": routing_metadata.get("route", ""),
-                        "reason": routing_metadata.get("reason", ""),
-                        "classify_ms": routing_metadata.get("classify_ms", 0),
-                        "stream_ms": event.get("stream_ms", 0),
-                        "total_ms": event.get("total_ms", 0),
-                    }
-                    await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        database.add_message,
-                        conversation_id,
-                        "assistant",
-                        full_content,
-                        metadata,
-                    )
+    try:
+        async for event in router.route_and_respond(message, history):
+            if event["type"] == "routing":
+                routing_metadata = event
+                yield {
+                    "event": "routing",
+                    "data": json.dumps(event),
+                }
 
-                    yield {
-                        "event": "done",
-                        "data": json.dumps(event),
-                    }
+            elif event["type"] == "token":
+                full_content += event["content"]
+                yield {
+                    "event": "token",
+                    "data": json.dumps(event),
+                }
 
-                    # Auto-title: after the first exchange, generate a short
-                    # title so the sidebar shows something meaningful instead
-                    # of "New conversation" for every chat.
-                    if is_first_message:
-                        asyncio.create_task(_auto_title(conversation_id, body.message))
+            elif event["type"] == "done":
+                # Save the complete assistant response to the database.
+                # We store routing metadata alongside the message so it
+                # can be displayed when the conversation is reloaded.
+                metadata = {
+                    "model": routing_metadata.get("model", ""),
+                    "route": routing_metadata.get("route", ""),
+                    "reason": routing_metadata.get("reason", ""),
+                    "classify_ms": routing_metadata.get("classify_ms", 0),
+                    "stream_ms": event.get("stream_ms", 0),
+                    "total_ms": event.get("total_ms", 0),
+                }
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    database.add_message,
+                    conversation_id,
+                    "assistant",
+                    full_content,
+                    metadata,
+                )
 
-        except Exception as e:
+                yield {
+                    "event": "done",
+                    "data": json.dumps(event),
+                }
+
+                # Auto-title: after the first exchange, generate a short
+                # title so the sidebar shows something meaningful instead
+                # of "New conversation" for every chat.
+                if is_first_message:
+                    asyncio.create_task(_auto_title(conversation_id, message))
+
+    except Exception as e:
+        # Save whatever was generated so far so the conversation doesn't
+        # have an orphaned user message with no assistant response.
+        if full_content:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                database.add_message,
+                conversation_id,
+                "assistant",
+                full_content,
+                {"error": str(e), "partial": True},
+            )
+        yield {
+            "event": "error",
+            "data": json.dumps({"error": str(e)}),
+        }
+
+
+async def _documents_event_stream(
+    conversation_id: str,
+    message: str,
+    history: list[dict[str, str]],
+    is_first_message: bool,
+) -> AsyncGenerator[dict[str, str], None]:
+    """SSE event stream for documents mode (RAG).
+
+    Documents mode works differently from chat mode:
+    1. Search uploaded documents for relevant chunks (no model classification)
+    2. Yield a "sources" event so the frontend can display them immediately
+    3. Build a RAG prompt that includes the source excerpts as context
+    4. Stream the model's response (always uses the general model)
+
+    Why include source metadata in saved messages?
+    When you reload a conversation, the original documents may have been
+    deleted or the server restarted (in-memory storage). By saving the
+    source excerpts in the message metadata, the UI can always show what
+    sources were used, even if the documents are gone.
+    """
+    full_content = ""
+    total_start = time.monotonic()
+
+    try:
+        # Step 1: Search for relevant document chunks.
+        # We use semantic search (embedding cosine similarity) to find chunks
+        # whose meaning matches the question, even if different words are used.
+        sources = await documents.search_chunks(message, method="semantic", top_k=5)
+
+        # Yield sources so the frontend can display them immediately,
+        # before the model starts generating tokens.
+        yield {
+            "event": "sources",
+            "data": json.dumps({"sources": sources, "model": RAG_MODEL}),
+        }
+
+        if not sources:
+            # No documents uploaded or no relevant chunks found.
+            # Tell the user instead of sending an empty context to the model.
+            full_content = (
+                "No relevant documents found. Please upload some PDFs first, "
+                "then ask your question again."
+            )
             yield {
-                "event": "error",
-                "data": json.dumps({"error": str(e)}),
+                "event": "token",
+                "data": json.dumps({"type": "token", "content": full_content}),
+            }
+            total_ms = round((time.monotonic() - total_start) * 1000)
+            metadata: dict[str, Any] = {
+                "model": RAG_MODEL,
+                "sources": [],
+                "total_ms": total_ms,
+                "stream_ms": 0,
+            }
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                database.add_message,
+                conversation_id,
+                "assistant",
+                full_content,
+                metadata,
+            )
+            yield {
+                "event": "done",
+                "data": json.dumps({"total_ms": total_ms, "stream_ms": 0}),
+            }
+            if is_first_message:
+                asyncio.create_task(_auto_title(conversation_id, message))
+            return
+
+        # Step 2: Build the RAG prompt.
+        # We inject the source excerpts directly into the user message so the
+        # model sees them as context. Each excerpt is labeled with its filename
+        # and page number so the model can cite them in its response.
+        # This is simpler than tool-use/function-calling and works with any model.
+        excerpts = "\n\n".join(
+            f"[{s['filename']}, page {s['page']}]:\n{s['text']}" for s in sources
+        )
+        augmented_message = (
+            f"Based on the following document excerpts, answer my question.\n\n"
+            f"--- DOCUMENT EXCERPTS ---\n{excerpts}\n--- END EXCERPTS ---\n\n"
+            f"Question: {message}"
+        )
+
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": RAG_SYSTEM_PROMPT}
+        ]
+        messages.extend(history)
+        messages.append({"role": "user", "content": augmented_message})
+
+        # Step 3: Stream the response from the general model.
+        stream_start = time.monotonic()
+        async for token in models.stream_chat(RAG_MODEL, messages, RAG_MODEL_OPTIONS):
+            full_content += token
+            yield {
+                "event": "token",
+                "data": json.dumps({"type": "token", "content": token}),
             }
 
-    return EventSourceResponse(event_stream())
+        stream_ms = round((time.monotonic() - stream_start) * 1000)
+        total_ms = round((time.monotonic() - total_start) * 1000)
+
+        # Save with source metadata so the frontend can re-display sources
+        # when the conversation is reloaded from the database.
+        metadata = {
+            "model": RAG_MODEL,
+            "sources": sources,
+            "total_ms": total_ms,
+            "stream_ms": stream_ms,
+        }
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            database.add_message,
+            conversation_id,
+            "assistant",
+            full_content,
+            metadata,
+        )
+
+        yield {
+            "event": "done",
+            "data": json.dumps({"total_ms": total_ms, "stream_ms": stream_ms}),
+        }
+
+        if is_first_message:
+            asyncio.create_task(_auto_title(conversation_id, message))
+
+    except Exception as e:
+        if full_content:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                database.add_message,
+                conversation_id,
+                "assistant",
+                full_content,
+                {"error": str(e), "partial": True},
+            )
+        yield {
+            "event": "error",
+            "data": json.dumps({"error": str(e)}),
+        }
 
 
 async def _auto_title(conversation_id: str, first_message: str) -> None:
@@ -270,7 +477,7 @@ async def _auto_title(conversation_id: str, first_message: str) -> None:
     """
     try:
         title = await router.generate_title(first_message)
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             None, database.update_conversation_title, conversation_id, title
         )
     except Exception:
