@@ -11,6 +11,7 @@
 #      instead of dealing with raw HTTP
 #   4. Easy to test — mock this one module to test any feature
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncGenerator
@@ -34,6 +35,19 @@ OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
 # connections are properly cleaned up on shutdown.
 _client: httpx.AsyncClient | None = None
 
+# Request queue: only one chat/completion request at a time.
+#
+# Why a semaphore instead of just letting requests compete?
+# Ollama can only run one model at a time on GPU. If two requests arrive
+# simultaneously for different models, one triggers a model swap mid-inference
+# for the other — causing timeouts or corrupted output. A semaphore(1) ensures
+# requests run one at a time, and the second request simply waits its turn.
+#
+# embed() is excluded because the embedding model coexists with chat models
+# in GPU memory (it's small enough to share), so it shouldn't block or be
+# blocked by chat requests.
+_ollama_semaphore: asyncio.Semaphore | None = None
+
 
 def get_client() -> httpx.AsyncClient:
     """Return the shared httpx client. Raises if not initialized."""
@@ -43,12 +57,13 @@ def get_client() -> httpx.AsyncClient:
 
 
 def init_client() -> None:
-    """Create the shared httpx client. Call once at app startup."""
-    global _client
+    """Create the shared httpx client and request semaphore. Call once at app startup."""
+    global _client, _ollama_semaphore
     _client = httpx.AsyncClient(
         base_url=OLLAMA_BASE,
         timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
     )
+    _ollama_semaphore = asyncio.Semaphore(1)
 
 
 async def close_client() -> None:
@@ -57,6 +72,30 @@ async def close_client() -> None:
     if _client is not None:
         await _client.aclose()
         _client = None
+
+
+async def preload_model(model: str, keep_alive: str = "10m") -> None:
+    """Send a minimal request to load a model into GPU memory.
+
+    Why preload matters for perceived speed:
+    The first request to any Ollama model takes 2-20 seconds while the model
+    loads from disk into GPU memory. Subsequent requests are near-instant
+    because the model stays resident. By preloading the classifier (llama3.2:3b)
+    at startup, the user's very first question gets classified instantly instead
+    of waiting for a cold start. We set num_predict=1 and num_ctx=512 to make
+    this as fast as possible — we don't care about the response, just that the
+    model is loaded.
+    """
+    await get_client().post(
+        "/api/chat",
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "keep_alive": keep_alive,
+            "options": {"num_ctx": 512, "num_predict": 1},
+        },
+    )
 
 
 def _apply_no_think(
@@ -89,6 +128,7 @@ async def stream_chat(
     model: str,
     messages: list[dict[str, Any]],
     options: dict[str, Any] | None = None,
+    keep_alive: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream a chat response token-by-token from Ollama.
 
@@ -101,6 +141,9 @@ async def stream_chat(
                   [{"role": "user", "content": "hello"}]
         options: Optional Ollama parameters like {"temperature": 0.7,
                  "num_ctx": 4096, "think": False}
+        keep_alive: How long to keep the model in memory after this request
+                    (e.g. "10m" for 10 minutes). Reduces cold starts between
+                    questions.
     """
     # Default to 8192 token context window — enough for multi-turn conversations
     # and RAG chunks without eating too much VRAM on a single request.
@@ -125,32 +168,40 @@ async def stream_chat(
     }
     if think is not None:
         payload["think"] = think
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
 
-    # We use stream() to read the response line-by-line as Ollama sends it.
-    # Each line is a JSON object with a "message.content" field containing
-    # one token. The last line has "done": true.
-    async with get_client().stream("POST", "/api/chat", json=payload) as response:
-        if response.status_code != 200:
-            await response.aread()
-            raise RuntimeError(
-                f"Ollama returned {response.status_code}: {response.text}"
-            )
-        async for line in response.aiter_lines():
-            if not line:
-                continue
-            chunk = json.loads(line)
-            # Ollama can send errors mid-stream as {"error": "message"}
-            if "error" in chunk:
-                raise RuntimeError(f"Ollama error: {chunk['error']}")
-            token = chunk.get("message", {}).get("content", "")
-            if token:
-                yield token
+    # Acquire the semaphore for the entire streaming read. Releasing it before
+    # all tokens are consumed would let a second request trigger a model swap
+    # mid-stream, corrupting the output.
+    assert _ollama_semaphore is not None
+    async with _ollama_semaphore:
+        # We use stream() to read the response line-by-line as Ollama sends it.
+        # Each line is a JSON object with a "message.content" field containing
+        # one token. The last line has "done": true.
+        async with get_client().stream("POST", "/api/chat", json=payload) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise RuntimeError(
+                    f"Ollama returned {response.status_code}: {response.text}"
+                )
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                # Ollama can send errors mid-stream as {"error": "message"}
+                if "error" in chunk:
+                    raise RuntimeError(f"Ollama error: {chunk['error']}")
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    yield token
 
 
 async def chat(
     model: str,
     messages: list[dict[str, Any]],
     options: dict[str, Any] | None = None,
+    keep_alive: str | None = None,
 ) -> str:
     """Send a chat request and return the complete response as a string.
 
@@ -162,6 +213,7 @@ async def chat(
         model: Ollama model name
         messages: Chat history in OpenAI-style format
         options: Optional Ollama parameters
+        keep_alive: How long to keep the model in memory after this request
     """
     # Default to 8192 token context window — enough for multi-turn conversations
     # and RAG chunks without eating too much VRAM on a single request.
@@ -181,17 +233,23 @@ async def chat(
     }
     if think is not None:
         payload["think"] = think
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
 
-    response = await get_client().post("/api/chat", json=payload)
-    if response.status_code != 200:
-        raise RuntimeError(f"Ollama returned {response.status_code}: {response.text}")
-    data = response.json()
-    if "error" in data:
-        raise RuntimeError(f"Ollama error: {data['error']}")
-    message = data.get("message")
-    if message is None:
-        raise RuntimeError(f"Ollama returned no message: {data}")
-    return message.get("content", "")
+    assert _ollama_semaphore is not None
+    async with _ollama_semaphore:
+        response = await get_client().post("/api/chat", json=payload)
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Ollama returned {response.status_code}: {response.text}"
+            )
+        data = response.json()
+        if "error" in data:
+            raise RuntimeError(f"Ollama error: {data['error']}")
+        message = data.get("message")
+        if message is None:
+            raise RuntimeError(f"Ollama returned no message: {data}")
+        return message.get("content", "")
 
 
 async def classify(question: str, routes: list[dict[str, str]]) -> dict[str, str]:

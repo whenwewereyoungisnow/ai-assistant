@@ -24,6 +24,7 @@ import numpy as np
 from numpy.typing import NDArray
 from rank_bm25 import BM25Okapi
 
+import database
 import models
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,40 @@ def _rebuild_search_index() -> None:
         _bm25 = BM25Okapi(tokenized)
     else:
         _bm25 = None
+
+
+def load_cached_documents() -> None:
+    """Restore documents from SQLite on startup.
+
+    This is the key to surviving restarts without re-uploading. On startup
+    we read all chunks and embeddings from the database, group them by
+    filename, and rebuild the in-memory search index. No Ollama needed —
+    the embeddings are already computed and stored as BLOBs.
+
+    Call this once during app startup, after database.init_db().
+    """
+    cached_chunks = database.load_all_chunks()
+    if not cached_chunks:
+        return
+
+    # Group chunks by filename to reconstruct _documents
+    docs: dict[str, list[dict[str, Any]]] = {}
+    for chunk in cached_chunks:
+        filename = chunk["filename"]
+        if filename not in docs:
+            docs[filename] = []
+        docs[filename].append(chunk)
+
+    for filename, chunks in docs.items():
+        # Estimate page count from the max page number in the chunks
+        max_page = max(c["page"] for c in chunks)
+        _documents[filename] = {
+            "filename": filename,
+            "pages": max_page,
+            "chunks": chunks,
+        }
+
+    _rebuild_search_index()
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +316,11 @@ async def process_pdf(file_path: Path, filename: str) -> dict[str, Any]:
         "chunks": chunks,
     }
     _rebuild_search_index()
+
+    # Persist chunks and embeddings to SQLite so they survive restarts.
+    # This runs after the in-memory store is updated so the app is usable
+    # immediately — the SQLite write is just for durability.
+    database.save_chunks(filename, chunks)
 
     return {
         "filename": filename,
@@ -519,10 +559,12 @@ def delete_document(filename: str) -> bool:
 
     After deletion, the BM25 index is rebuilt without the removed chunks.
     The embedding vectors are freed when the chunk dicts are garbage collected.
+    Also removes from SQLite so the document doesn't reappear on restart.
     """
     if filename not in _documents:
         return False
 
     del _documents[filename]
     _rebuild_search_index()
+    database.delete_chunks(filename)
     return True

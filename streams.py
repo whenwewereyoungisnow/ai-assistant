@@ -61,6 +61,29 @@ DOC_RELEVANCE_THRESHOLD = 0.55
 DOC_CONSULT_TOP_K = 3
 
 
+# How often to auto-save partial responses during streaming.
+# Every PARTIAL_SAVE_TOKENS tokens OR PARTIAL_SAVE_SECONDS seconds (whichever
+# comes first), the current content is written to SQLite. This balances
+# durability against write overhead. At typical rates (~30-80 tok/s), this
+# means a save every 0.6-1.7 seconds — good enough that a crash loses at
+# most a sentence or two.
+PARTIAL_SAVE_TOKENS = 50
+PARTIAL_SAVE_SECONDS = 5.0
+
+
+async def _save_partial(
+    message_id: str, content: str, loop: asyncio.AbstractEventLoop
+) -> None:
+    """Save partial streaming content to the database (runs in thread pool)."""
+    await loop.run_in_executor(
+        None,
+        database.update_message_content,
+        message_id,
+        content,
+        {"partial": True},
+    )
+
+
 async def chat_event_stream(
     conversation_id: str,
     message: str,
@@ -75,15 +98,24 @@ async def chat_event_stream(
     full_content = ""
     routing_metadata: dict[str, Any] = {}
     doc_sources: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
 
     # Read settings at request time so changes take effect immediately
     active_routes = settings.get_routes()
 
+    # Create a placeholder assistant message before streaming starts.
+    # This gets updated incrementally during streaming so partial responses
+    # survive connection drops.
+    message_id = await loop.run_in_executor(
+        None, database.add_message, conversation_id, "assistant", "", {"partial": True}
+    )
+
+    # Tracking for periodic partial saves
+    token_count = 0
+    last_save_time = time.monotonic()
+
     try:
         # --- Cross-mode: auto-consult documents if relevant ---
-        # Document consultation is best-effort — if the embedding model
-        # fails to load or Ollama is down, we skip it silently and proceed
-        # with the normal chat flow.
         effective_message = message
         if documents.has_documents():
             try:
@@ -127,10 +159,21 @@ async def chat_event_stream(
 
             elif event["type"] == "token":
                 full_content += event["content"]
+                token_count += 1
                 yield {
                     "event": "token",
                     "data": json.dumps(event),
                 }
+
+                # Periodic partial save — every N tokens or N seconds
+                now = time.monotonic()
+                if (
+                    token_count >= PARTIAL_SAVE_TOKENS
+                    or now - last_save_time >= PARTIAL_SAVE_SECONDS
+                ):
+                    token_count = 0
+                    last_save_time = now
+                    await _save_partial(message_id, full_content, loop)
 
             elif event["type"] == "done":
                 metadata = {
@@ -150,11 +193,12 @@ async def chat_event_stream(
                         }
                         for s in doc_sources
                     ]
-                await asyncio.get_running_loop().run_in_executor(
+                # Final save — replaces the partial placeholder with complete
+                # content and full metadata
+                await loop.run_in_executor(
                     None,
-                    database.add_message,
-                    conversation_id,
-                    "assistant",
+                    database.update_message_content,
+                    message_id,
                     full_content,
                     metadata,
                 )
@@ -168,12 +212,12 @@ async def chat_event_stream(
                     asyncio.create_task(auto_title(conversation_id, message))
 
     except Exception as e:
+        # Save whatever we have so the partial response isn't lost
         if full_content:
-            await asyncio.get_running_loop().run_in_executor(
+            await loop.run_in_executor(
                 None,
-                database.add_message,
-                conversation_id,
-                "assistant",
+                database.update_message_content,
+                message_id,
                 full_content,
                 {"error": str(e), "partial": True},
             )
@@ -199,11 +243,20 @@ async def documents_event_stream(
     """
     full_content = ""
     total_start = time.monotonic()
+    loop = asyncio.get_running_loop()
 
     # Read settings at request time
     rag_model = settings.get_setting("rag_model")
     search_method = settings.get_setting("search_method")
     search_count = settings.get_setting("search_results_count")
+
+    # Create placeholder for partial saves
+    message_id = await loop.run_in_executor(
+        None, database.add_message, conversation_id, "assistant", "", {"partial": True}
+    )
+
+    token_count = 0
+    last_save_time = time.monotonic()
 
     try:
         sources = await documents.search_chunks(
@@ -231,11 +284,10 @@ async def documents_event_stream(
                 "total_ms": total_ms,
                 "stream_ms": 0,
             }
-            await asyncio.get_running_loop().run_in_executor(
+            await loop.run_in_executor(
                 None,
-                database.add_message,
-                conversation_id,
-                "assistant",
+                database.update_message_content,
+                message_id,
                 full_content,
                 metadata,
             )
@@ -263,12 +315,25 @@ async def documents_event_stream(
         messages.append({"role": "user", "content": augmented_message})
 
         stream_start = time.monotonic()
-        async for token in models.stream_chat(rag_model, messages, RAG_MODEL_OPTIONS):
+        async for token in models.stream_chat(
+            rag_model, messages, RAG_MODEL_OPTIONS, keep_alive="10m"
+        ):
             full_content += token
+            token_count += 1
             yield {
                 "event": "token",
                 "data": json.dumps({"type": "token", "content": token}),
             }
+
+            # Periodic partial save
+            now = time.monotonic()
+            if (
+                token_count >= PARTIAL_SAVE_TOKENS
+                or now - last_save_time >= PARTIAL_SAVE_SECONDS
+            ):
+                token_count = 0
+                last_save_time = now
+                await _save_partial(message_id, full_content, loop)
 
         stream_ms = round((time.monotonic() - stream_start) * 1000)
         total_ms = round((time.monotonic() - total_start) * 1000)
@@ -279,11 +344,11 @@ async def documents_event_stream(
             "total_ms": total_ms,
             "stream_ms": stream_ms,
         }
-        await asyncio.get_running_loop().run_in_executor(
+        # Final save with complete metadata
+        await loop.run_in_executor(
             None,
-            database.add_message,
-            conversation_id,
-            "assistant",
+            database.update_message_content,
+            message_id,
             full_content,
             metadata,
         )
@@ -298,11 +363,10 @@ async def documents_event_stream(
 
     except Exception as e:
         if full_content:
-            await asyncio.get_running_loop().run_in_executor(
+            await loop.run_in_executor(
                 None,
-                database.add_message,
-                conversation_id,
-                "assistant",
+                database.update_message_content,
+                message_id,
                 full_content,
                 {"error": str(e), "partial": True},
             )

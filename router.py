@@ -132,7 +132,9 @@ async def route_and_respond(
 
     # Step 3: Stream the response token by token.
     stream_start = time.monotonic()
-    async for token in models.stream_chat(route["model"], messages, route["options"]):
+    async for token in models.stream_chat(
+        route["model"], messages, route["options"], keep_alive="10m"
+    ):
         yield {"type": "token", "content": token}
 
     stream_ms = round((time.monotonic() - stream_start) * 1000)

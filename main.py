@@ -28,6 +28,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings.init_settings()
     init_logs_table()
     models.init_client()
+
+    # Restore documents from SQLite so they survive restarts without re-uploading.
+    # Must run after init_db (needs the table) and before preload (no Ollama needed).
+    documents.load_cached_documents()
+
+    # Preload the classifier model so the first question doesn't wait for a cold
+    # start. This is best-effort — if Ollama isn't running yet, the first request
+    # will just be a few seconds slower while the model loads on demand.
+    try:
+        await models.preload_model("llama3.2:3b")
+    except Exception:
+        pass
+
     yield
     await models.close_client()
 
@@ -101,6 +114,54 @@ async def root() -> FileResponse:
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> dict[str, Any]:
+    """Comprehensive startup readiness check.
+
+    Unlike /health (simple liveness probe), this endpoint verifies that all
+    subsystems are functional: database, Ollama connectivity, required models,
+    and cached documents. The frontend uses this to show a startup health
+    screen with per-system checkmarks.
+    """
+    checks: dict[str, dict[str, Any]] = {}
+
+    # 1. Database — can we read from it?
+    try:
+        conn = database.connect()
+        conn.execute("SELECT 1")
+        conn.close()
+        checks["database"] = {"status": "ok"}
+    except Exception as e:
+        checks["database"] = {"status": "error", "detail": str(e)}
+
+    # 2. Ollama — is the server reachable?
+    available_models: list[dict[str, Any]] = []
+    try:
+        available_models = await models.list_models()
+        checks["ollama"] = {"status": "ok"}
+    except Exception as e:
+        checks["ollama"] = {"status": "error", "detail": str(e)}
+
+    # 3. Required models — are the essentials downloaded?
+    model_names = {m.get("name", "") for m in available_models}
+    required = ["llama3.2:3b", "qwen3-embedding:4b"]
+    missing = [m for m in required if not any(m in n for n in model_names)]
+    if missing:
+        checks["models"] = {"status": "warning", "missing": missing}
+    else:
+        checks["models"] = {"status": "ok"}
+
+    # 4. Documents — how many are loaded from cache?
+    checks["documents"] = {
+        "status": "ok",
+        "count": documents.document_count(),
+        "chunks": documents.chunk_count(),
+    }
+
+    overall = "ok" if all(c["status"] == "ok" for c in checks.values()) else "degraded"
+    return {"status": overall, "checks": checks}
 
 
 @app.get("/models")

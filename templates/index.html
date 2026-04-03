@@ -585,6 +585,94 @@
 
         .thinking-content.open { display: block; }
 
+        /* --- Copy code button ---
+           Why code blocks need a copy button:
+           Developers constantly copy code from AI responses. Without a button,
+           they have to triple-click or drag-select inside a scrollable pre block,
+           which often misses or grabs extra content. A one-click copy button
+           saves time and avoids selection mistakes. */
+        .message-content pre {
+            position: relative;
+        }
+
+        .copy-code-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            padding: 3px 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+            color: var(--text-muted);
+            font-size: 11px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s, background 0.15s;
+        }
+
+        .message-content pre:hover .copy-code-btn {
+            opacity: 1;
+        }
+
+        .copy-code-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            color: var(--text-primary);
+        }
+
+        .copy-code-btn.copied {
+            color: var(--success);
+            border-color: var(--success);
+        }
+
+        /* --- Startup health overlay --- */
+        .health-overlay {
+            position: fixed;
+            inset: 0;
+            background: var(--bg-primary);
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.3s ease;
+        }
+
+        .health-overlay.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .health-card {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .health-card h2 {
+            font-size: 24px;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+
+        .health-subtitle {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+
+        .health-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 0;
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        .health-icon {
+            font-size: 16px;
+            width: 24px;
+            text-align: center;
+        }
+
         /* Timing info shown after response completes */
         .timing-info {
             font-size: 11px;
@@ -1137,6 +1225,31 @@
 </head>
 <body>
 
+    <!-- Startup health screen — shows system readiness checks while the app
+         initializes. Each check transitions from a loading spinner to a
+         checkmark or warning as the backend reports its status. The overlay
+         fades out once everything is ready. -->
+    <div id="healthOverlay" class="health-overlay">
+        <div class="health-card">
+            <h2>AI Assistant</h2>
+            <p class="health-subtitle">Starting up...</p>
+            <div id="healthChecks">
+                <div class="health-item" data-check="database">
+                    <span class="health-icon">&#x23F3;</span> Database
+                </div>
+                <div class="health-item" data-check="ollama">
+                    <span class="health-icon">&#x23F3;</span> Ollama
+                </div>
+                <div class="health-item" data-check="models">
+                    <span class="health-icon">&#x23F3;</span> Required models
+                </div>
+                <div class="health-item" data-check="documents">
+                    <span class="health-icon">&#x23F3;</span> Documents loaded
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Sidebar: conversation list -->
     <div class="sidebar" id="sidebar">
         <div class="sidebar-header">
@@ -1643,6 +1756,10 @@
                 <div class="message-content">${renderMarkdown(content)}</div>
             `;
 
+            // Syntax-highlight code blocks and add copy buttons
+            div.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+            addCopyButtons(div);
+
             // Add timing info if available
             if (role === 'assistant' && metadata && metadata.total_ms) {
                 const timing = document.createElement('div');
@@ -1745,6 +1862,13 @@
                 return `%%THINK_${thinkBlocks.length - 1}%%`;
             });
 
+            // What XSS is and why markdown rendering needs sanitization:
+            // XSS (Cross-Site Scripting) is an attack where malicious scripts
+            // get injected into a web page. If we render markdown directly to
+            // HTML without sanitization, a model response containing something
+            // like a script tag with alert('hacked') would execute in the browser.
+            // DOMPurify strips dangerous tags/attributes while keeping safe
+            // formatting like bold, code, tables, etc.
             let html = DOMPurify.sanitize(marked.parse(text));
 
             // Re-insert thinking blocks after sanitization.
@@ -1760,6 +1884,39 @@
             });
 
             return html;
+        }
+
+        /**
+         * Add "Copy" buttons to all code blocks inside a container element.
+         * Called after markdown rendering and syntax highlighting so the buttons
+         * appear on every code block in the response.
+         */
+        function addCopyButtons(container) {
+            container.querySelectorAll('pre code').forEach(codeBlock => {
+                const pre = codeBlock.parentElement;
+                // Don't add duplicate buttons
+                if (pre.querySelector('.copy-code-btn')) return;
+
+                const btn = document.createElement('button');
+                btn.className = 'copy-code-btn';
+                btn.textContent = 'Copy';
+                btn.onclick = async (e) => {
+                    e.stopPropagation();
+                    try {
+                        await navigator.clipboard.writeText(codeBlock.textContent);
+                        btn.textContent = 'Copied!';
+                        btn.classList.add('copied');
+                        setTimeout(() => {
+                            btn.textContent = 'Copy';
+                            btn.classList.remove('copied');
+                        }, 1500);
+                    } catch {
+                        btn.textContent = 'Failed';
+                        setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+                    }
+                };
+                pre.appendChild(btn);
+            });
         }
 
         // =========================================================
@@ -1836,6 +1993,7 @@
                 const contentDiv = phaseEl.querySelector('.writing-phase-content');
                 contentDiv.innerHTML = renderMarkdown(msg.content);
                 contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                addCopyButtons(contentDiv);
 
                 // Collapse all phases except the last one so the user sees
                 // the final result by default but can expand earlier phases
@@ -1859,7 +2017,30 @@
             const text = input.value.trim();
             if (!text || isStreaming) return;
 
-            // Auto-create a conversation if none is selected
+            // --- Optimistic UI ---
+            // What "optimistic UI" means and why it makes the app feel faster:
+            // Instead of waiting for the server to confirm "yes, I created the
+            // conversation and received your message," we immediately show the
+            // user's message in the UI. The server calls happen in the background.
+            // This eliminates 100-200ms of perceived latency because the user
+            // sees their message appear instantly. If the server call fails, we
+            // show an error — but 99% of the time it succeeds, so the optimistic
+            // assumption pays off.
+
+            // Clear welcome and show user message BEFORE any network calls
+            const welcome = document.querySelector('.welcome');
+            if (welcome) welcome.remove();
+
+            const messagesContainer = document.getElementById('messages');
+            const userEl = createMessageElement('user', text, null);
+            messagesContainer.appendChild(userEl);
+
+            input.value = '';
+            input.style.height = 'auto';
+            scrollToBottom();
+
+            // Create conversation if needed — must complete before chat POST
+            // (we need the ID), but sidebar refresh is fire-and-forget
             if (!currentConversationId) {
                 const res = await fetch('/conversations', {
                     method: 'POST',
@@ -1868,21 +2049,8 @@
                 });
                 const data = await res.json();
                 currentConversationId = data.id;
-                await loadConversations();
+                loadConversations();  // fire-and-forget — don't await
             }
-
-            // Clear the welcome message if it's still showing
-            const welcome = document.querySelector('.welcome');
-            if (welcome) welcome.remove();
-
-            // Add user message to UI
-            const messagesContainer = document.getElementById('messages');
-            const userEl = createMessageElement('user', text, null);
-            messagesContainer.appendChild(userEl);
-
-            input.value = '';
-            input.style.height = 'auto';
-            scrollToBottom();
 
             // In documents mode, show a "Searching documents..." indicator
             // while the backend searches for relevant chunks.
@@ -1906,6 +2074,16 @@
                 writingAbortController = new AbortController();
             }
 
+            // These must be declared outside the try block so the catch block
+            // can access them for SSE reconnection (recovering partial content).
+            // JavaScript's `let` is block-scoped — declaring inside `try {}` would
+            // make them invisible to `catch {}`.
+            let assistantDiv = null;
+            let contentDiv = null;
+            let fullContent = '';
+            let metadata = {};
+            let buffer = '';
+
             try {
                 const fetchOptions = {
                     method: 'POST',
@@ -1927,12 +2105,6 @@
                 // Parse the SSE stream manually.
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
-
-                let assistantDiv = null;
-                let contentDiv = null;
-                let fullContent = '';
-                let metadata = {};
-                let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
@@ -2069,6 +2241,7 @@
                                     if (prevContent) {
                                         prevContent.innerHTML = renderMarkdown(fullContent);
                                         prevContent.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                        addCopyButtons(prevContent);
                                         prevContent.classList.add('collapsed');
                                         currentPhaseDiv.querySelector('.arrow').textContent = '\u25B6';
                                     }
@@ -2098,6 +2271,7 @@
                                 if (contentDiv) {
                                     contentDiv.innerHTML = renderMarkdown(fullContent);
                                     contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                    addCopyButtons(contentDiv);
                                 }
                             }
                         }
@@ -2126,6 +2300,7 @@
                                 if (contentDiv) {
                                     contentDiv.innerHTML = renderMarkdown(fullContent);
                                     contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                    addCopyButtons(contentDiv);
                                 }
 
                                 // Remove stop button
@@ -2150,6 +2325,7 @@
                                     contentDiv.querySelectorAll('pre code').forEach(block => {
                                         hljs.highlightElement(block);
                                     });
+                                    addCopyButtons(contentDiv);
                                 }
 
                                 // Add timing info
@@ -2165,6 +2341,9 @@
                             }
 
                             await loadConversations();
+                            // Refresh sidebar after a delay to pick up auto-generated
+                            // title (runs as a background task on the server, takes ~1-2s).
+                            // We only reload the sidebar instead of all conversations.
                             setTimeout(() => loadConversations(), 2500);
                         }
 
@@ -2184,7 +2363,45 @@
                 }
             } catch (err) {
                 // AbortError is expected when the user clicks "Stop Pipeline"
-                if (err.name !== 'AbortError') {
+                if (err.name === 'AbortError') {
+                    // User cancelled — no recovery needed
+                } else if (fullContent && currentConversationId) {
+                    // --- SSE reconnection logic ---
+                    // The connection dropped mid-stream. Rather than trying to
+                    // resume (which is impractical with POST-based SSE), we
+                    // recover from the server. The backend saves partial responses
+                    // periodically, so there may be more content saved than what
+                    // we received on the frontend.
+                    try {
+                        const conv = await fetch(
+                            `/conversations/${currentConversationId}`
+                        ).then(r => r.json());
+                        const msgs = conv.messages || [];
+                        const lastMsg = msgs[msgs.length - 1];
+                        if (lastMsg && lastMsg.role === 'assistant' &&
+                            lastMsg.content.length > fullContent.length) {
+                            // Server has more than we displayed — update the DOM
+                            fullContent = lastMsg.content;
+                            if (contentDiv) {
+                                contentDiv.innerHTML = renderMarkdown(fullContent);
+                                contentDiv.querySelectorAll('pre code').forEach(
+                                    block => hljs.highlightElement(block)
+                                );
+                                addCopyButtons(contentDiv);
+                            }
+                        }
+                        if (lastMsg && lastMsg.metadata && lastMsg.metadata.partial) {
+                            showToast(
+                                'Response was interrupted. Send another message to continue.',
+                                'warning'
+                            );
+                        } else {
+                            showToast('Connection lost, but response was recovered.', 'warning');
+                        }
+                    } catch {
+                        showToast('Connection lost. Partial response shown.', 'warning');
+                    }
+                } else {
                     showToast('Connection error: ' + err.message);
                 }
             } finally {
@@ -2198,6 +2415,7 @@
                     if (contentDiv && fullContent) {
                         contentDiv.innerHTML = renderMarkdown(fullContent);
                         contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                        addCopyButtons(contentDiv);
                     }
                     const stopBtn = pipelineContainer.querySelector('.writing-stop-btn');
                     if (stopBtn) stopBtn.remove();
@@ -2243,7 +2461,9 @@
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
-            return div.innerHTML;
+            // Also escape backticks and ${} to prevent template literal injection
+            // when the result is used inside JS template strings (backtick strings).
+            return div.innerHTML.replace(/`/g, '&#96;').replace(/\$/g, '&#36;');
         }
 
         function scrollToBottom() {
@@ -2519,10 +2739,71 @@
         // Init
         // =========================================================
 
-        // Load theme from settings on page load
-        fetch('/settings').then(r => r.json()).then(s => applyTheme(s.theme)).catch(() => {});
+        // =========================================================
+        // App initialization with health screen
+        // =========================================================
+        // On page load, we show a health overlay that checks each subsystem
+        // (database, Ollama, models, documents). This makes startup feel
+        // intentional ��� the user sees what's happening instead of staring
+        // at a blank page. Once everything is ready, the overlay fades out.
 
-        loadConversations();
+        async function initApp() {
+            const overlay = document.getElementById('healthOverlay');
+
+            try {
+                const res = await fetch('/health/ready');
+                const health = await res.json();
+
+                for (const [name, check] of Object.entries(health.checks)) {
+                    const item = document.querySelector(`[data-check="${name}"]`);
+                    if (!item) continue;
+                    const icon = item.querySelector('.health-icon');
+                    if (check.status === 'ok') {
+                        icon.textContent = '\u2705';
+                        // Show extra info for documents
+                        if (name === 'documents' && check.count > 0) {
+                            item.innerHTML += ` <span style="color:var(--text-muted);font-size:12px">(${check.count} docs, ${check.chunks} chunks)</span>`;
+                        }
+                    } else if (check.status === 'warning') {
+                        icon.textContent = '\u26A0\uFE0F';
+                        if (check.missing) {
+                            item.innerHTML += ` <span style="color:var(--warning);font-size:12px">(missing: ${check.missing.join(', ')})</span>`;
+                        }
+                    } else {
+                        icon.textContent = '\u274C';
+                    }
+                }
+
+                const subtitle = overlay.querySelector('.health-subtitle');
+                if (health.status === 'ok') {
+                    subtitle.textContent = 'All systems ready';
+                } else {
+                    subtitle.textContent = 'Some systems need attention';
+                }
+
+                // Brief pause so user sees the checkmarks
+                await new Promise(r => setTimeout(r, 500));
+            } catch {
+                // Health check failed entirely — still continue to the app
+                const subtitle = overlay.querySelector('.health-subtitle');
+                subtitle.textContent = 'Could not reach server';
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // Load theme and conversations
+            try {
+                const settingsData = await fetch('/settings').then(r => r.json());
+                applyTheme(settingsData.theme);
+            } catch {}
+
+            await loadConversations();
+
+            // Fade out overlay
+            overlay.classList.add('fade-out');
+            setTimeout(() => overlay.remove(), 300);
+        }
+
+        initApp();
     </script>
 </body>
 </html>

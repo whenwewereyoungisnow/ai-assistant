@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+import numpy as np
+
 # Type aliases for the allowed values. Literal means "only these exact strings
 # are valid" — your editor and type checker will catch mistakes like
 # add_message(..., role="bot") before you even run the code.
@@ -110,6 +112,36 @@ def init_db() -> None:
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_messages_conversation
             ON messages(conversation_id)
+        """)
+
+        # Document chunks table — persists PDF chunks and their embeddings
+        # so they survive server restarts without re-uploading and re-embedding.
+        #
+        # How embedding caching reduces startup time with many documents:
+        # Without caching, every restart means re-uploading PDFs and calling
+        # the embedding model for every chunk (~0.5s per batch of 20). A 100-page
+        # PDF with 500 chunks would take ~12 seconds just for embeddings. With
+        # SQLite caching, those same chunks load in milliseconds from disk —
+        # no Ollama needed at all during startup.
+        #
+        # Embeddings are stored as BLOBs (raw float64 bytes). A 1024-dimension
+        # embedding is 8KB as a BLOB — compact and fast to read/write. We
+        # reconstruct the numpy array with np.frombuffer() on load.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename    TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                page        INTEGER NOT NULL,
+                text        TEXT NOT NULL,
+                embedding   BLOB NOT NULL,
+                created_at  TIMESTAMP NOT NULL,
+                UNIQUE(filename, chunk_index)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chunks_filename
+            ON document_chunks(filename)
         """)
 
         conn.commit()
@@ -346,3 +378,116 @@ def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
         results.append(row_dict)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Document chunk persistence
+# ---------------------------------------------------------------------------
+
+
+def save_chunks(filename: str, chunks: list[dict[str, Any]]) -> None:
+    """Persist document chunks and embeddings to SQLite.
+
+    Replaces any existing chunks for the same filename (handles re-uploads).
+    Embeddings are stored as raw float64 bytes in a BLOB column.
+
+    Args:
+        filename: The document filename (used as the grouping key)
+        chunks: List of chunk dicts, each with "text", "embedding" (numpy array),
+                "page", and "chunk_index" keys.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        # Delete old chunks for this file (handles re-uploads)
+        conn.execute("DELETE FROM document_chunks WHERE filename = ?", (filename,))
+
+        for chunk in chunks:
+            embedding_blob = chunk["embedding"].astype(np.float64).tobytes()
+            conn.execute(
+                "INSERT INTO document_chunks "
+                "(filename, chunk_index, page, text, embedding, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    filename,
+                    chunk["chunk_index"],
+                    chunk["page"],
+                    chunk["text"],
+                    embedding_blob,
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_all_chunks() -> list[dict[str, Any]]:
+    """Load all cached document chunks from SQLite.
+
+    Returns chunk dicts with numpy array embeddings reconstructed from BLOBs.
+    Called at startup to restore documents without needing Ollama.
+    """
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT filename, chunk_index, page, text, embedding "
+            "FROM document_chunks ORDER BY filename, chunk_index"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    chunks: list[dict[str, Any]] = []
+    for row in rows:
+        embedding = np.frombuffer(row["embedding"], dtype=np.float64)
+        chunks.append(
+            {
+                "text": row["text"],
+                "embedding": embedding,
+                "filename": row["filename"],
+                "page": row["page"],
+                "chunk_index": row["chunk_index"],
+            }
+        )
+    return chunks
+
+
+def delete_chunks(filename: str) -> None:
+    """Delete all cached chunks for a document."""
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM document_chunks WHERE filename = ?", (filename,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_cached_filenames() -> list[str]:
+    """Return distinct filenames that have cached chunks."""
+    conn = connect()
+    try:
+        rows = conn.execute("SELECT DISTINCT filename FROM document_chunks").fetchall()
+    finally:
+        conn.close()
+    return [row["filename"] for row in rows]
+
+
+def update_message_content(
+    message_id: str, content: str, metadata: dict[str, Any] | None = None
+) -> None:
+    """Update the content and metadata of an existing message.
+
+    Used during streaming to periodically save partial responses so they
+    survive connection drops. The message row must already exist (created
+    as a placeholder before streaming starts).
+    """
+    metadata_json = json.dumps(metadata) if metadata is not None else None
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE messages SET content = ?, metadata = ? WHERE id = ?",
+            (content, metadata_json, message_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()

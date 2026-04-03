@@ -172,7 +172,7 @@ async def run_pipeline(
         draft_content = ""
         try:
             async for token in models.stream_chat(
-                active_writer, writer_messages, writer_options
+                active_writer, writer_messages, writer_options, keep_alive="10m"
             ):
                 draft_content += token
                 yield {"type": "token", "content": token, "phase": phase}
@@ -228,7 +228,7 @@ async def run_pipeline(
         critique_content = ""
         try:
             async for token in models.stream_chat(
-                active_editor, editor_messages, editor_options
+                active_editor, editor_messages, editor_options, keep_alive="10m"
             ):
                 critique_content += token
                 yield {"type": "token", "content": token, "phase": "critique"}
