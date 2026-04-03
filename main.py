@@ -16,6 +16,7 @@ import database
 import documents
 import models
 import router
+import writer
 
 
 # Lifespan handler — FastAPI runs the code before "yield" on startup, and
@@ -236,6 +237,12 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
     if mode == "documents":
         return EventSourceResponse(
             _documents_event_stream(
+                conversation_id, body.message, history, is_first_message
+            )
+        )
+    elif mode == "writing":
+        return EventSourceResponse(
+            _writing_event_stream(
                 conversation_id, body.message, history, is_first_message
             )
         )
@@ -462,6 +469,110 @@ async def _documents_event_stream(
                 full_content,
                 {"error": str(e), "partial": True},
             )
+        yield {
+            "event": "error",
+            "data": json.dumps({"error": str(e)}),
+        }
+
+
+async def _writing_event_stream(
+    conversation_id: str,
+    message: str,
+    history: list[dict[str, str]],
+    is_first_message: bool,
+) -> AsyncGenerator[dict[str, str], None]:
+    """SSE event stream for writing mode (multi-agent pipeline).
+
+    Writing mode is fundamentally different from chat and documents modes:
+    instead of one model responding to one question, two models collaborate
+    across multiple rounds. The Writer drafts, the Editor critiques, and the
+    Writer revises — up to 3 rounds or until the Editor approves.
+
+    How pipeline events map to SSE events:
+    - phase_start → "writing" event (tells frontend to create a new section)
+    - token       → "token" event (same as chat/documents, plus a "phase" field)
+    - phase_end   → "writing" event (tells frontend to finalize the section)
+    - complete    → "done" event (same as chat/documents)
+
+    Why save each phase as a separate assistant message?
+    When the user reloads the conversation, they see the full creative process:
+    the original draft, the editor's critique, and each revision. This is more
+    useful than just seeing the final result, because it lets you understand
+    *why* the final version looks the way it does and learn from the feedback.
+
+    How the Writer/Editor model swap affects timing:
+    The Writer (~21GB) and Editor (~20GB) can't fit in GPU memory together.
+    Ollama swaps them automatically, costing ~20 seconds per swap. In a
+    3-round pipeline, that's up to 5 swaps (draft → critique → revision →
+    critique → revision → critique). Both models stream their output so the
+    user sees activity during swaps instead of a blank screen.
+    """
+    try:
+        async for event in writer.run_pipeline(message, history):
+            if event["type"] == "phase_start":
+                yield {
+                    "event": "writing",
+                    "data": json.dumps(event),
+                }
+
+            elif event["type"] == "token":
+                yield {
+                    "event": "token",
+                    "data": json.dumps(
+                        {
+                            "type": "token",
+                            "content": event["content"],
+                            "phase": event["phase"],
+                        }
+                    ),
+                }
+
+            elif event["type"] == "phase_end":
+                # Save each phase as a separate assistant message so the
+                # full creative process is preserved in the database.
+                phase_model = (
+                    writer.EDITOR_MODEL
+                    if event["phase"] == "critique"
+                    else writer.WRITER_MODEL
+                )
+                metadata = {
+                    "phase": event["phase"],
+                    "round": event["round"],
+                    "model": phase_model,
+                    "duration_ms": event["duration_ms"],
+                    "pipeline": True,
+                }
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    database.add_message,
+                    conversation_id,
+                    "assistant",
+                    event["content"],
+                    metadata,
+                )
+                yield {
+                    "event": "writing",
+                    "data": json.dumps(event),
+                }
+
+            elif event["type"] == "complete":
+                yield {
+                    "event": "done",
+                    "data": json.dumps(event),
+                }
+                if is_first_message:
+                    asyncio.create_task(_auto_title(conversation_id, message))
+
+            elif event["type"] == "error":
+                # Pipeline-level error (e.g. Ollama crashed mid-stream).
+                # Forward it as an SSE error event so the frontend shows
+                # a clean message instead of silently dying.
+                yield {
+                    "event": "error",
+                    "data": json.dumps({"error": event["error"]}),
+                }
+
+    except Exception as e:
         yield {
             "event": "error",
             "data": json.dumps({"error": str(e)}),

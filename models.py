@@ -59,6 +59,32 @@ async def close_client() -> None:
         _client = None
 
 
+def _apply_no_think(
+    model: str, messages: list[dict[str, Any]], think: bool | None
+) -> list[dict[str, Any]]:
+    """Append /no_think to the last user message for qwen3.5 models.
+
+    Even with the API-level think=false parameter, qwen3.5 sometimes still
+    enters thinking mode during streaming. Appending /no_think to the user
+    message content is the most reliable prompt-level suppression method.
+    We make a shallow copy of the messages list and only copy the last user
+    message dict, so we don't mutate the caller's data.
+    """
+    if think is not False or "qwen3.5" not in model:
+        return messages
+
+    # Find the last user message and append /no_think
+    messages = list(messages)  # shallow copy of the list
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            messages[i] = {
+                **messages[i],
+                "content": messages[i]["content"] + " /no_think",
+            }
+            break
+    return messages
+
+
 async def stream_chat(
     model: str,
     messages: list[dict[str, Any]],
@@ -89,6 +115,7 @@ async def stream_chat(
     # "message.thinking" field instead of "message.content"), so stream_chat
     # yields nothing until thinking finishes. Extracting it here fixes that.
     think = merged_options.pop("think", None)
+    messages = _apply_no_think(model, messages, think)
 
     payload: dict[str, Any] = {
         "model": model,
@@ -144,6 +171,7 @@ async def chat(
 
     # Extract "think" to top level — same reason as in stream_chat above.
     think = merged_options.pop("think", None)
+    messages = _apply_no_think(model, messages, think)
 
     payload: dict[str, Any] = {
         "model": model,

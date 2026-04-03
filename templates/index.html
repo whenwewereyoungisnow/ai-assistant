@@ -34,6 +34,7 @@
             --badge-bg: #2a2a4a;
             --danger: #e74c3c;
             --success: #2ecc71;
+            --warning: #f39c12;
             --sidebar-width: 280px;
         }
 
@@ -635,6 +636,111 @@
             50% { opacity: 0.2; }
         }
 
+        /* --- Writing pipeline ---
+           The pipeline renders each phase (draft, critique, revision) as a
+           collapsible section. Phases stack vertically inside .writing-pipeline.
+           Each phase has a clickable header (showing phase name, model, timing)
+           and a content area that collapses when the next phase starts. */
+
+        .writing-pipeline {
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .writing-phase {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            background: var(--assistant-bubble);
+        }
+
+        .writing-phase-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            background: var(--badge-bg);
+            border: none;
+            width: 100%;
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-secondary);
+            text-align: left;
+            font-family: inherit;
+        }
+
+        .writing-phase-header:hover {
+            background: var(--bg-tertiary);
+        }
+
+        .writing-phase-header .arrow {
+            font-size: 10px;
+            color: var(--text-muted);
+            width: 12px;
+            flex-shrink: 0;
+        }
+
+        .writing-phase-header .phase-label {
+            font-weight: 600;
+        }
+
+        .phase-label.draft { color: var(--accent); }
+        .phase-label.revision { color: var(--success); }
+        .phase-label.critique { color: var(--warning); }
+
+        .writing-phase-header .model-name {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        .writing-phase-timing {
+            margin-left: auto;
+            color: var(--text-muted);
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+
+        .writing-phase-content {
+            padding: 12px 16px;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .writing-phase-content.collapsed {
+            display: none;
+        }
+
+        .writing-stop-btn {
+            align-self: flex-start;
+            padding: 6px 16px;
+            background: transparent;
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: inherit;
+            transition: background 0.2s;
+            margin-top: 4px;
+        }
+
+        .writing-stop-btn:hover {
+            background: var(--danger);
+            color: white;
+        }
+
+        .writing-summary {
+            font-size: 12px;
+            color: var(--text-muted);
+            padding: 8px 0;
+            border-top: 1px solid var(--border);
+            margin-top: 4px;
+        }
+
         /* --- Toast --- */
         .toast {
             position: fixed;
@@ -684,7 +790,7 @@
         <div class="mode-bar">
             <button class="mode-btn active" data-mode="chat">Chat</button>
             <button class="mode-btn" data-mode="documents">Documents</button>
-            <button class="mode-btn disabled" data-mode="writing">Writing</button>
+            <button class="mode-btn" data-mode="writing">Writing</button>
             <button class="mode-btn disabled" data-mode="vision">Vision</button>
         </div>
 
@@ -731,6 +837,13 @@
         let currentMode = 'chat';
         let isStreaming = false;
 
+        // Writing pipeline state — tracked separately because the pipeline
+        // creates multiple content sections (one per phase) unlike chat/documents
+        // which have a single assistant message per response.
+        let writingAbortController = null;
+        let pipelineContainer = null;
+        let currentPhaseDiv = null;
+
         // Configure marked.js for markdown rendering.
         marked.setOptions({
             highlight: function(code, lang) {
@@ -749,6 +862,7 @@
         const WELCOME_MESSAGES = {
             chat: "Ask me anything. I'll route your question to the best model automatically.",
             documents: "Upload PDFs and ask questions about them. I'll search your documents and cite sources.",
+            writing: "Describe what you'd like written. A writer and editor will collaborate through multiple rounds to refine the result.",
         };
 
         function switchMode(mode) {
@@ -769,8 +883,12 @@
             document.getElementById('docPanel').classList.toggle('visible', mode === 'documents');
 
             // Update placeholder text
+            const placeholders = {
+                documents: 'Ask about your documents...',
+                writing: 'Describe what you\'d like written...',
+            };
             document.getElementById('userInput').placeholder =
-                mode === 'documents' ? 'Ask about your documents...' : 'Type a message...';
+                placeholders[mode] || 'Type a message...';
 
             // Reset conversation and reload sidebar for this mode
             currentConversationId = null;
@@ -965,7 +1083,25 @@
             const container = document.getElementById('messages');
             container.innerHTML = '';
 
-            for (const msg of messages) {
+            // Group consecutive pipeline messages so they render as a single
+            // collapsible pipeline display instead of separate messages.
+            let i = 0;
+            while (i < messages.length) {
+                const msg = messages[i];
+
+                // Check if this starts a pipeline group (writing mode)
+                if (msg.role === 'assistant' && msg.metadata && msg.metadata.pipeline) {
+                    const pipelineMsgs = [];
+                    while (i < messages.length && messages[i].role === 'assistant' &&
+                           messages[i].metadata && messages[i].metadata.pipeline) {
+                        pipelineMsgs.push(messages[i]);
+                        i++;
+                    }
+                    // Find the user message right before the pipeline to show it
+                    renderPipelineMessages(pipelineMsgs, container);
+                    continue;
+                }
+
                 // For assistant messages with sources metadata, render sources
                 // section above the response. This handles both live streaming
                 // and reloading saved conversations from the database.
@@ -974,6 +1110,7 @@
                 }
                 const el = createMessageElement(msg.role, msg.content, msg.metadata);
                 container.appendChild(el);
+                i++;
             }
 
             scrollToBottom();
@@ -1096,6 +1233,94 @@
         }
 
         // =========================================================
+        // Writing pipeline helpers
+        // =========================================================
+
+        /**
+         * Create a collapsible phase section for the writing pipeline.
+         * Each phase (draft, critique, revision) gets its own section with
+         * a clickable header showing the phase name, model, and timing.
+         * Clicking the header toggles the content visibility.
+         */
+        function createWritingPhaseElement(data) {
+            const phaseKey = data.phase + '-' + data.round;
+            const section = document.createElement('div');
+            section.className = 'writing-phase';
+            section.dataset.phase = phaseKey;
+
+            const labels = {
+                draft: 'Draft',
+                critique: 'Editor Critique',
+                revision: 'Revision (Round ' + data.round + ')',
+            };
+            const label = labels[data.phase] || data.phase;
+            const phaseClass = data.phase;  // draft, critique, or revision
+
+            section.innerHTML =
+                '<button class="writing-phase-header" onclick="togglePhase(this)">' +
+                    '<span class="arrow">\u25BC</span>' +
+                    '<span class="phase-label ' + phaseClass + '">' + escapeHtml(label) + '</span>' +
+                    '<span class="model-name">' + escapeHtml(data.model) + '</span>' +
+                    '<span class="writing-phase-timing"></span>' +
+                '</button>' +
+                '<div class="writing-phase-content">' +
+                    '<span class="streaming-indicator"></span>' +
+                '</div>';
+
+            return section;
+        }
+
+        function togglePhase(btn) {
+            const content = btn.nextElementSibling;
+            const isCollapsed = content.classList.toggle('collapsed');
+            btn.querySelector('.arrow').textContent = isCollapsed ? '\u25B6' : '\u25BC';
+        }
+
+        /**
+         * Render saved pipeline messages when reloading a conversation.
+         * Groups consecutive messages with metadata.pipeline === true into
+         * a static pipeline display with collapsible phases.
+         */
+        function renderPipelineMessages(pipelineMessages, container) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'writing-pipeline';
+
+            for (let i = 0; i < pipelineMessages.length; i++) {
+                const msg = pipelineMessages[i];
+                const meta = msg.metadata || {};
+                const isLast = i === pipelineMessages.length - 1;
+
+                const phaseEl = createWritingPhaseElement({
+                    phase: meta.phase || 'draft',
+                    round: meta.round || 1,
+                    model: meta.model || '',
+                });
+
+                // Set timing
+                const timingSpan = phaseEl.querySelector('.writing-phase-timing');
+                if (meta.duration_ms) {
+                    timingSpan.textContent = (meta.duration_ms / 1000).toFixed(1) + 's';
+                }
+
+                // Fill content
+                const contentDiv = phaseEl.querySelector('.writing-phase-content');
+                contentDiv.innerHTML = renderMarkdown(msg.content);
+                contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+
+                // Collapse all phases except the last one so the user sees
+                // the final result by default but can expand earlier phases
+                if (!isLast) {
+                    contentDiv.classList.add('collapsed');
+                    phaseEl.querySelector('.arrow').textContent = '\u25B6';
+                }
+
+                wrapper.appendChild(phaseEl);
+            }
+
+            container.appendChild(wrapper);
+        }
+
+        // =========================================================
         // Sending messages + SSE streaming
         // =========================================================
 
@@ -1144,12 +1369,23 @@
             isStreaming = true;
             document.getElementById('sendBtn').disabled = true;
 
+            // Writing mode uses an AbortController so the Stop button can
+            // cancel the pipeline mid-stream. Other modes don't need this
+            // since they produce a single response.
+            if (currentMode === 'writing') {
+                writingAbortController = new AbortController();
+            }
+
             try {
-                const res = await fetch(`/chat/${currentConversationId}`, {
+                const fetchOptions = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: text }),
-                });
+                };
+                if (writingAbortController) {
+                    fetchOptions.signal = writingAbortController.signal;
+                }
+                const res = await fetch(`/chat/${currentConversationId}`, fetchOptions);
 
                 if (!res.ok) {
                     const err = await res.json();
@@ -1263,6 +1499,67 @@
                             scrollToBottom();
                         }
 
+                        // --- Writing mode: phase events ---
+                        // The pipeline sends "writing" events for phase_start
+                        // and phase_end. Each phase gets its own collapsible
+                        // section in the UI.
+                        else if (eventType === 'writing') {
+                            if (parsed.type === 'phase_start') {
+                                // Create the pipeline container on first phase
+                                if (!pipelineContainer) {
+                                    pipelineContainer = document.createElement('div');
+                                    pipelineContainer.className = 'writing-pipeline';
+
+                                    const stopBtn = document.createElement('button');
+                                    stopBtn.className = 'writing-stop-btn';
+                                    stopBtn.textContent = 'Stop Pipeline';
+                                    stopBtn.onclick = () => {
+                                        if (writingAbortController) writingAbortController.abort();
+                                    };
+                                    pipelineContainer.appendChild(stopBtn);
+                                    messagesContainer.appendChild(pipelineContainer);
+                                }
+
+                                // Collapse the previous phase (if any) so the
+                                // user focuses on the current one
+                                if (currentPhaseDiv) {
+                                    const prevContent = currentPhaseDiv.querySelector('.writing-phase-content');
+                                    if (prevContent) {
+                                        prevContent.innerHTML = renderMarkdown(fullContent);
+                                        prevContent.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                        prevContent.classList.add('collapsed');
+                                        currentPhaseDiv.querySelector('.arrow').textContent = '\u25B6';
+                                    }
+                                }
+
+                                // Create new phase section
+                                const phaseEl = createWritingPhaseElement(parsed);
+
+                                // Insert before the stop button
+                                const stopBtn = pipelineContainer.querySelector('.writing-stop-btn');
+                                pipelineContainer.insertBefore(phaseEl, stopBtn);
+                                currentPhaseDiv = phaseEl;
+                                contentDiv = phaseEl.querySelector('.writing-phase-content');
+                                fullContent = '';
+                                scrollToBottom();
+                            }
+
+                            else if (parsed.type === 'phase_end') {
+                                // Update timing in the phase header
+                                if (currentPhaseDiv) {
+                                    const timingSpan = currentPhaseDiv.querySelector('.writing-phase-timing');
+                                    if (timingSpan && parsed.duration_ms) {
+                                        timingSpan.textContent = (parsed.duration_ms / 1000).toFixed(1) + 's';
+                                    }
+                                }
+                                // Finalize content (remove streaming indicator)
+                                if (contentDiv) {
+                                    contentDiv.innerHTML = renderMarkdown(fullContent);
+                                    contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                }
+                            }
+                        }
+
                         // --- Shared: token event ---
                         else if (eventType === 'token') {
                             fullContent += parsed.content;
@@ -1281,22 +1578,49 @@
                                 searchingEl = null;
                             }
 
-                            if (contentDiv) {
-                                contentDiv.innerHTML = renderMarkdown(fullContent);
-                                contentDiv.querySelectorAll('pre code').forEach(block => {
-                                    hljs.highlightElement(block);
-                                });
-                            }
+                            // Writing mode: finalize the pipeline display
+                            if (currentMode === 'writing' && pipelineContainer) {
+                                // Finalize the last phase content
+                                if (contentDiv) {
+                                    contentDiv.innerHTML = renderMarkdown(fullContent);
+                                    contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                                }
 
-                            // Add timing info
-                            if (assistantDiv && parsed.total_ms) {
-                                const timing = document.createElement('div');
-                                timing.className = 'timing-info';
-                                const timeParts = [`${(parsed.total_ms / 1000).toFixed(1)}s total`];
-                                if (parsed.stream_ms) timeParts.push(`${(parsed.stream_ms / 1000).toFixed(1)}s generation`);
-                                if (metadata.classify_ms) timeParts.push(`routed in ${metadata.classify_ms}ms`);
-                                timing.textContent = timeParts.join(' \u00b7 ');
-                                assistantDiv.appendChild(timing);
+                                // Remove stop button
+                                const stopBtn = pipelineContainer.querySelector('.writing-stop-btn');
+                                if (stopBtn) stopBtn.remove();
+
+                                // Add summary bar
+                                const summary = document.createElement('div');
+                                summary.className = 'writing-summary';
+                                const approvedText = parsed.approved ? 'Editor approved' : 'Max rounds reached';
+                                summary.textContent = parsed.rounds + ' round(s) \u00b7 ' +
+                                    (parsed.total_ms / 1000).toFixed(1) + 's total \u00b7 ' + approvedText;
+                                pipelineContainer.appendChild(summary);
+
+                                // Reset pipeline state
+                                pipelineContainer = null;
+                                currentPhaseDiv = null;
+                                pipelinePhases = {};
+                            } else {
+                                // Chat / Documents mode: finalize single response
+                                if (contentDiv) {
+                                    contentDiv.innerHTML = renderMarkdown(fullContent);
+                                    contentDiv.querySelectorAll('pre code').forEach(block => {
+                                        hljs.highlightElement(block);
+                                    });
+                                }
+
+                                // Add timing info
+                                if (assistantDiv && parsed.total_ms) {
+                                    const timing = document.createElement('div');
+                                    timing.className = 'timing-info';
+                                    const timeParts = [`${(parsed.total_ms / 1000).toFixed(1)}s total`];
+                                    if (parsed.stream_ms) timeParts.push(`${(parsed.stream_ms / 1000).toFixed(1)}s generation`);
+                                    if (metadata.classify_ms) timeParts.push(`routed in ${metadata.classify_ms}ms`);
+                                    timing.textContent = timeParts.join(' \u00b7 ');
+                                    assistantDiv.appendChild(timing);
+                                }
                             }
 
                             await loadConversations();
@@ -1318,11 +1642,28 @@
                     }
                 }
             } catch (err) {
-                showToast('Connection error: ' + err.message);
+                // AbortError is expected when the user clicks "Stop Pipeline"
+                if (err.name !== 'AbortError') {
+                    showToast('Connection error: ' + err.message);
+                }
             } finally {
                 isStreaming = false;
                 document.getElementById('sendBtn').disabled = false;
                 if (searchingEl) searchingEl.remove();
+                // Finalize partial content if the pipeline was aborted mid-phase.
+                // Without this, the last phase would be stuck showing the streaming
+                // indicator with raw markdown instead of rendered content.
+                if (currentMode === 'writing' && pipelineContainer) {
+                    if (contentDiv && fullContent) {
+                        contentDiv.innerHTML = renderMarkdown(fullContent);
+                        contentDiv.querySelectorAll('pre code').forEach(block => hljs.highlightElement(block));
+                    }
+                    const stopBtn = pipelineContainer.querySelector('.writing-stop-btn');
+                    if (stopBtn) stopBtn.remove();
+                }
+                writingAbortController = null;
+                pipelineContainer = null;
+                currentPhaseDiv = null;
             }
         }
 
