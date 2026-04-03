@@ -38,6 +38,28 @@
             --sidebar-width: 280px;
         }
 
+        /* Light theme — overrides the dark CSS variables when
+           data-theme="light" is set on <html>. All components use
+           var() references, so swapping the theme is instant. */
+        [data-theme="light"] {
+            --bg-primary: #f0f2f5;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #e4e8ed;
+            --bg-input: #ffffff;
+            --text-primary: #1a1a2e;
+            --text-secondary: #4a4a6a;
+            --text-muted: #8a8aa0;
+            --accent: #2a7de1;
+            --accent-hover: #1a6dd1;
+            --border: #d0d4da;
+            --user-bubble: #e8f0fe;
+            --assistant-bubble: #f0f0f8;
+            --badge-bg: #e4e8ed;
+            --danger: #d32f2f;
+            --success: #2e7d32;
+            --warning: #ed6c02;
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -813,7 +835,7 @@
             margin: 2px 0;
         }
 
-        /* --- Toast --- */
+        /* --- Toast (enhanced with types) --- */
         .toast {
             position: fixed;
             bottom: 80px;
@@ -831,11 +853,279 @@
             z-index: 100;
         }
 
-        .toast.show { opacity: 1; }
+        .toast.show { opacity: 1; pointer-events: auto; }
+        .toast.error { border-color: var(--danger); color: var(--danger); }
+        .toast.success { border-color: var(--success); color: var(--success); }
 
-        /* --- Responsive: hide sidebar on small screens --- */
-        @media (max-width: 700px) {
-            .sidebar { display: none; }
+        /* --- Settings panel --- */
+        .settings-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 200;
+            justify-content: center;
+            align-items: center;
+        }
+        .settings-overlay.open { display: flex; }
+
+        .settings-panel {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            width: 480px;
+            max-width: 90vw;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 24px;
+        }
+
+        .settings-panel h3 {
+            margin-bottom: 16px;
+            font-size: 18px;
+        }
+
+        .settings-group {
+            margin-bottom: 16px;
+        }
+
+        .settings-group label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .settings-group select,
+        .settings-group input[type="range"] {
+            width: 100%;
+            padding: 6px 8px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+        }
+
+        .settings-group select { appearance: none; cursor: pointer; }
+
+        .settings-group .range-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .settings-group .range-value {
+            font-size: 14px;
+            font-weight: 600;
+            min-width: 20px;
+            text-align: center;
+        }
+
+        .settings-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .settings-row label {
+            font-size: 13px;
+            color: var(--text-primary);
+            margin-bottom: 0;
+        }
+
+        /* Toggle switch for theme */
+        .toggle {
+            width: 44px; height: 24px;
+            background: var(--border);
+            border-radius: 12px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.2s;
+            border: none;
+        }
+        .toggle.active { background: var(--accent); }
+        .toggle::after {
+            content: '';
+            position: absolute;
+            width: 18px; height: 18px;
+            background: white;
+            border-radius: 50%;
+            top: 3px; left: 3px;
+            transition: transform 0.2s;
+        }
+        .toggle.active::after { transform: translateX(20px); }
+
+        .settings-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .settings-actions button {
+            padding: 8px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 13px;
+            font-family: inherit;
+        }
+
+        .settings-actions .save-btn {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        /* --- Search overlay (Cmd+K) --- */
+        .search-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 200;
+            justify-content: center;
+            align-items: flex-start;
+            padding-top: 15vh;
+        }
+        .search-overlay.open { display: flex; }
+
+        .search-panel {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            width: 500px;
+            max-width: 90vw;
+            overflow: hidden;
+        }
+
+        .search-panel input {
+            width: 100%;
+            padding: 14px 16px;
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 15px;
+            font-family: inherit;
+            outline: none;
+        }
+
+        .search-results {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .search-result {
+            padding: 10px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            transition: background 0.1s;
+        }
+
+        .search-result:hover { background: var(--bg-tertiary); }
+
+        .search-result-title {
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .search-result-snippet {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .search-empty {
+            padding: 16px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        /* --- Gear icon + export icon in header --- */
+        .mode-bar-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 4px;
+        }
+
+        .icon-btn {
+            width: 32px; height: 32px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.15s, color 0.15s;
+        }
+        .icon-btn:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+
+        /* --- Skeleton loading --- */
+        .skeleton {
+            background: linear-gradient(90deg, var(--bg-tertiary) 25%, var(--border) 50%, var(--bg-tertiary) 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+            border-radius: 6px;
+        }
+        .skeleton-line { height: 14px; margin-bottom: 8px; }
+        .skeleton-line:last-child { width: 60%; }
+
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* --- Animations --- */
+        .mode-btn { transition: all 0.2s ease; }
+        .sidebar { transition: transform 0.3s ease; }
+        .doc-panel { transition: all 0.2s ease; }
+
+        /* --- Mobile responsive --- */
+        .mobile-toggle {
+            display: none;
+            width: 36px; height: 36px;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            font-size: 20px;
+            cursor: pointer;
+            border-radius: 6px;
+        }
+
+        .sidebar-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 50;
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                left: 0; top: 0; bottom: 0;
+                z-index: 60;
+                transform: translateX(-100%);
+            }
+            .sidebar.mobile-open { transform: translateX(0); }
+            .sidebar-backdrop.open { display: block; }
+            .mobile-toggle { display: flex; align-items: center; justify-content: center; }
+            .mode-bar { flex-wrap: wrap; gap: 4px; padding: 8px 12px; }
+            .mode-btn { padding: 5px 10px; font-size: 12px; }
+            .input-wrapper { padding: 0; }
         }
 
         /* Scrollbar styling */
@@ -848,22 +1138,25 @@
 <body>
 
     <!-- Sidebar: conversation list -->
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <button class="new-chat-btn" onclick="newChat()">+ New Chat</button>
         </div>
         <div class="conversation-list" id="conversationList"></div>
     </div>
+    <div class="sidebar-backdrop" id="sidebarBackdrop" onclick="closeSidebar()"></div>
 
     <!-- Main chat area -->
     <div class="main">
-        <!-- Mode selector — Chat and Documents are active.
-             Writing and Vision still show "Coming soon". -->
         <div class="mode-bar">
-            <button class="mode-btn active" data-mode="chat">Chat</button>
-            <button class="mode-btn" data-mode="documents">Documents</button>
-            <button class="mode-btn" data-mode="writing">Writing</button>
-            <button class="mode-btn disabled" data-mode="vision">Vision</button>
+            <button class="mobile-toggle" onclick="toggleSidebar()">&#9776;</button>
+            <button class="mode-btn active" data-mode="chat">&#x1F4AC; Chat</button>
+            <button class="mode-btn" data-mode="documents">&#x1F4C4; Docs</button>
+            <button class="mode-btn" data-mode="writing">&#x270D;&#xFE0F; Write</button>
+            <button class="mode-btn disabled" data-mode="vision">&#x1F441; Vision</button>
+            <div class="mode-bar-actions">
+                <button class="icon-btn" onclick="openSettings()" title="Settings (Cmd+,)">&#x2699;</button>
+            </div>
         </div>
 
         <!-- Document panel — shown only in documents mode.
@@ -904,6 +1197,83 @@
     </div>
 
     <div class="toast" id="toast"></div>
+
+    <!-- Settings panel overlay -->
+    <div class="settings-overlay" id="settingsOverlay" onclick="if(event.target===this)closeSettings()">
+        <div class="settings-panel">
+            <h3>Settings</h3>
+            <div class="settings-group">
+                <label>General Model</label>
+                <select id="set-general_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Code Model</label>
+                <select id="set-code_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Reasoning Model</label>
+                <select id="set-reasoning_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>RAG / Document Model</label>
+                <select id="set-rag_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Writer Model</label>
+                <select id="set-writer_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Editor Model</label>
+                <select id="set-editor_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Search Method</label>
+                <select id="set-search_method">
+                    <option value="semantic">Semantic</option>
+                    <option value="keyword">Keyword (BM25)</option>
+                    <option value="hybrid">Hybrid</option>
+                </select>
+            </div>
+            <div class="settings-group">
+                <label>Search Results</label>
+                <div class="range-row">
+                    <input type="range" id="set-search_results_count" min="1" max="10" value="5"
+                           oninput="this.nextElementSibling.textContent=this.value">
+                    <span class="range-value">5</span>
+                </div>
+            </div>
+            <div class="settings-group">
+                <label>Writing Rounds</label>
+                <div class="range-row">
+                    <input type="range" id="set-max_writing_rounds" min="1" max="5" value="3"
+                           oninput="this.nextElementSibling.textContent=this.value">
+                    <span class="range-value">3</span>
+                </div>
+            </div>
+            <div class="settings-group">
+                <label>Theme</label>
+                <select id="set-theme">
+                    <option value="system">System (sync with OS)</option>
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                </select>
+            </div>
+            <div class="settings-actions">
+                <button onclick="closeSettings()">Cancel</button>
+                <button class="save-btn" onclick="saveSettings()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Search overlay (Cmd+K) -->
+    <div class="search-overlay" id="searchOverlay" onclick="if(event.target===this)closeSearch()">
+        <div class="search-panel">
+            <input type="text" id="searchInput" placeholder="Search conversations..." oninput="debounceSearch(this.value)">
+            <div class="search-results" id="searchResults">
+                <div class="search-empty">Type to search across all conversations</div>
+            </div>
+        </div>
+    </div>
 
     <script>
         // =========================================================
@@ -1017,6 +1387,13 @@
         // =========================================================
 
         async function loadConversations() {
+            // Show skeleton while loading
+            const list = document.getElementById('conversationList');
+            if (!list.children.length || list.querySelector('.skeleton')) {
+                list.innerHTML = Array(3).fill(
+                    '<div style="padding:10px 12px"><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line" style="width:40%"></div></div>'
+                ).join('');
+            }
             const res = await fetch('/conversations');
             const conversations = await res.json();
             renderConversationList(conversations);
@@ -1032,13 +1409,15 @@
                 return;
             }
 
+            const modeIcons = { chat: '\u{1F4AC}', documents: '\u{1F4C4}', writing: '\u270D\uFE0F', vision: '\u{1F441}' };
             list.innerHTML = filtered.map(c => `
                 <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
                      onclick="loadConversation('${c.id}')">
                     <div class="conversation-item-info">
-                        <div class="conversation-title">${escapeHtml(c.title)}</div>
+                        <div class="conversation-title">${modeIcons[c.mode] || ''} ${escapeHtml(c.title)}</div>
                         <div class="conversation-time">${timeAgo(c.updated_at)}</div>
                     </div>
+                    <button class="delete-btn" onclick="event.stopPropagation(); exportConversation('${c.id}')" title="Export" style="font-size:12px">&#x2B07;</button>
                     <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${c.id}')" title="Delete">&#x2715;</button>
                 </div>
             `).join('');
@@ -1764,7 +2143,6 @@
                                 // Reset pipeline state
                                 pipelineContainer = null;
                                 currentPhaseDiv = null;
-                                pipelinePhases = {};
                             } else {
                                 // Chat / Documents mode: finalize single response
                                 if (contentDiv) {
@@ -1873,10 +2251,10 @@
             container.scrollTop = container.scrollHeight;
         }
 
-        function showToast(message) {
+        function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');
             toast.textContent = message;
-            toast.classList.add('show');
+            toast.className = 'toast show' + (type !== 'info' ? ' ' + type : '');
             setTimeout(() => toast.classList.remove('show'), 3000);
         }
 
@@ -1893,8 +2271,256 @@
         }
 
         // =========================================================
+        // Settings panel
+        // =========================================================
+
+        async function openSettings() {
+            const overlay = document.getElementById('settingsOverlay');
+            overlay.classList.add('open');
+
+            // Load current settings and available models in parallel
+            const [settingsRes, modelsRes] = await Promise.all([
+                fetch('/settings'),
+                fetch('/models'),
+            ]);
+            const current = await settingsRes.json();
+            const allModels = await modelsRes.json();
+            const modelNames = allModels.map(m => m.name || m.model || 'unknown');
+
+            // Populate model dropdowns
+            const modelKeys = ['general_model', 'code_model', 'reasoning_model', 'rag_model', 'writer_model', 'editor_model'];
+            for (const key of modelKeys) {
+                const sel = document.getElementById('set-' + key);
+                sel.innerHTML = modelNames.map(n =>
+                    `<option value="${escapeHtml(n)}" ${n === current[key] ? 'selected' : ''}>${escapeHtml(n)}</option>`
+                ).join('');
+            }
+
+            // Set other controls
+            document.getElementById('set-search_method').value = current.search_method;
+            const searchRange = document.getElementById('set-search_results_count');
+            searchRange.value = current.search_results_count;
+            searchRange.nextElementSibling.textContent = current.search_results_count;
+            const roundsRange = document.getElementById('set-max_writing_rounds');
+            roundsRange.value = current.max_writing_rounds;
+            roundsRange.nextElementSibling.textContent = current.max_writing_rounds;
+            document.getElementById('set-theme').value = current.theme;
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsOverlay').classList.remove('open');
+        }
+
+        async function saveSettings() {
+            const updates = {
+                general_model: document.getElementById('set-general_model').value,
+                code_model: document.getElementById('set-code_model').value,
+                reasoning_model: document.getElementById('set-reasoning_model').value,
+                rag_model: document.getElementById('set-rag_model').value,
+                writer_model: document.getElementById('set-writer_model').value,
+                editor_model: document.getElementById('set-editor_model').value,
+                search_method: document.getElementById('set-search_method').value,
+                search_results_count: parseInt(document.getElementById('set-search_results_count').value),
+                max_writing_rounds: parseInt(document.getElementById('set-max_writing_rounds').value),
+                theme: document.getElementById('set-theme').value,
+            };
+
+            const res = await fetch('/settings', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates),
+            });
+
+            if (res.ok) {
+                applyTheme(updates.theme);
+                closeSettings();
+                showToast('Settings saved', 'success');
+            } else {
+                const err = await res.json();
+                showToast(err.detail || 'Failed to save settings', 'error');
+            }
+        }
+
+        // Apply the theme to the page. "system" reads the OS preference
+        // via the prefers-color-scheme media query, which the browser
+        // evaluates in real time. We also listen for OS theme changes so
+        // the app switches instantly when you toggle system dark mode.
+        function applyTheme(theme) {
+            if (theme === 'system') {
+                const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light';
+            } else {
+                document.documentElement.dataset.theme = theme || 'dark';
+            }
+            // Store the raw setting so the listener knows whether to react
+            document.documentElement.dataset.themeSetting = theme || 'dark';
+        }
+
+        // Listen for OS dark/light mode changes. Only applies when the
+        // theme setting is "system" — if the user picked dark or light
+        // explicitly, OS changes are ignored.
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+            if (document.documentElement.dataset.themeSetting === 'system') {
+                document.documentElement.dataset.theme = e.matches ? 'dark' : 'light';
+            }
+        });
+
+        // =========================================================
+        // Search overlay (Cmd+K)
+        // =========================================================
+
+        let searchTimer = null;
+
+        function openSearch() {
+            const overlay = document.getElementById('searchOverlay');
+            overlay.classList.add('open');
+            const input = document.getElementById('searchInput');
+            input.value = '';
+            input.focus();
+            document.getElementById('searchResults').innerHTML =
+                '<div class="search-empty">Type to search across all conversations</div>';
+        }
+
+        function closeSearch() {
+            document.getElementById('searchOverlay').classList.remove('open');
+        }
+
+        function debounceSearch(query) {
+            clearTimeout(searchTimer);
+            if (!query.trim()) {
+                document.getElementById('searchResults').innerHTML =
+                    '<div class="search-empty">Type to search across all conversations</div>';
+                return;
+            }
+            searchTimer = setTimeout(() => runSearch(query.trim()), 300);
+        }
+
+        async function runSearch(query) {
+            const res = await fetch(`/conversations/search?q=${encodeURIComponent(query)}`);
+            const results = await res.json();
+            const container = document.getElementById('searchResults');
+
+            if (results.length === 0) {
+                container.innerHTML = '<div class="search-empty">No matches found</div>';
+                return;
+            }
+
+            const modeIcons = { chat: '\u{1F4AC}', documents: '\u{1F4C4}', writing: '\u270D\uFE0F', vision: '\u{1F441}' };
+            container.innerHTML = results.map(r => `
+                <div class="search-result" onclick="closeSearch(); loadConversation('${r.id}')">
+                    <div class="search-result-title">${modeIcons[r.mode] || ''} ${escapeHtml(r.title)}</div>
+                    <div class="search-result-snippet">${escapeHtml(r.snippet)}</div>
+                </div>
+            `).join('');
+        }
+
+        // =========================================================
+        // Export
+        // =========================================================
+
+        async function exportConversation(id) {
+            try {
+                const res = await fetch(`/conversations/${id}/export`, { method: 'POST' });
+                if (!res.ok) {
+                    showToast('Export failed', 'error');
+                    return;
+                }
+                // Get filename from Content-Disposition header or use default
+                const disposition = res.headers.get('Content-Disposition') || '';
+                const filenameMatch = disposition.match(/filename="(.+?)"/);
+                const filename = filenameMatch ? filenameMatch[1] : 'conversation.md';
+
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast('Exported', 'success');
+            } catch (e) {
+                showToast('Export error: ' + e.message, 'error');
+            }
+        }
+
+        // =========================================================
+        // Mobile sidebar
+        // =========================================================
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('mobile-open');
+            document.getElementById('sidebarBackdrop').classList.toggle('open');
+        }
+
+        function closeSidebar() {
+            document.getElementById('sidebar').classList.remove('mobile-open');
+            document.getElementById('sidebarBackdrop').classList.remove('open');
+        }
+
+        // =========================================================
+        // Keyboard shortcuts
+        // =========================================================
+
+        document.addEventListener('keydown', (e) => {
+            const mod = navigator.platform.includes('Mac') ? e.metaKey : e.ctrlKey;
+
+            // Escape: close any open panel
+            if (e.key === 'Escape') {
+                closeSettings();
+                closeSearch();
+                closeSidebar();
+                return;
+            }
+
+            // Don't capture shortcuts when typing in an input/textarea
+            // (except Cmd+Enter which is a send action)
+            const inInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+
+            if (mod && e.key === 'Enter') {
+                e.preventDefault();
+                sendMessage();
+                return;
+            }
+
+            if (!mod) return;
+
+            if (e.key === 'n') {
+                e.preventDefault();
+                newChat();
+            } else if (e.key === ',') {
+                e.preventDefault();
+                openSettings();
+            } else if (e.key === 'k') {
+                e.preventDefault();
+                openSearch();
+            } else if (!inInput && e.key === '1') {
+                e.preventDefault();
+                switchMode('chat');
+            } else if (!inInput && e.key === '2') {
+                e.preventDefault();
+                switchMode('documents');
+            } else if (!inInput && e.key === '3') {
+                e.preventDefault();
+                switchMode('writing');
+            }
+        });
+
+        // =========================================================
+        // Close panels helper
+        // =========================================================
+
+        function closeAllPanels() {
+            closeSettings();
+            closeSearch();
+            closeSidebar();
+        }
+
+        // =========================================================
         // Init
         // =========================================================
+
+        // Load theme from settings on page load
+        fetch('/settings').then(r => r.json()).then(s => applyTheme(s.theme)).catch(() => {});
 
         loadConversations();
     </script>

@@ -63,6 +63,8 @@ async def run_pipeline(
     history: list[dict[str, str]],
     max_rounds: int = 3,
     doc_context: str | None = None,
+    writer_model: str | None = None,
+    editor_model: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run the write-critique-revise pipeline, yielding events for each phase.
 
@@ -88,6 +90,12 @@ async def run_pipeline(
     then the critique, then the revision. Without events, the user would
     stare at a blank screen for several minutes.
     """
+    # Use provided models or fall back to module-level defaults.
+    # This lets the caller pass settings-based overrides while keeping
+    # the defaults unchanged for testing and fallback.
+    active_writer = writer_model or WRITER_MODEL
+    active_editor = editor_model or EDITOR_MODEL
+
     total_start = time.monotonic()
 
     # Track all drafts and critiques so each revision round has full context.
@@ -107,7 +115,7 @@ async def run_pipeline(
             "type": "phase_start",
             "phase": phase,
             "round": round_num,
-            "model": WRITER_MODEL,
+            "model": active_writer,
         }
 
         # Build the Writer's message context.
@@ -164,7 +172,7 @@ async def run_pipeline(
         draft_content = ""
         try:
             async for token in models.stream_chat(
-                WRITER_MODEL, writer_messages, writer_options
+                active_writer, writer_messages, writer_options
             ):
                 draft_content += token
                 yield {"type": "token", "content": token, "phase": phase}
@@ -196,7 +204,7 @@ async def run_pipeline(
             "type": "phase_start",
             "phase": "critique",
             "round": round_num,
-            "model": EDITOR_MODEL,
+            "model": active_editor,
         }
 
         editor_messages: list[dict[str, str]] = [
@@ -220,7 +228,7 @@ async def run_pipeline(
         critique_content = ""
         try:
             async for token in models.stream_chat(
-                EDITOR_MODEL, editor_messages, editor_options
+                active_editor, editor_messages, editor_options
             ):
                 critique_content += token
                 yield {"type": "token", "content": token, "phase": "critique"}

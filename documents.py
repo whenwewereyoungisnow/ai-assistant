@@ -324,6 +324,7 @@ async def search_chunks(
     query: str,
     method: str = "semantic",
     top_k: int = 5,
+    embedding_model: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search stored document chunks by meaning or keywords.
 
@@ -341,10 +342,18 @@ async def search_chunks(
       Better for specific terms, names, or jargon that the embedding model
       might not understand well.
 
+    "hybrid" (default recommended):
+      Combines both methods using Reciprocal Rank Fusion (RRF). Each method
+      produces a ranking; RRF scores each result as 1/(rank + k) and sums
+      the scores across methods. This avoids the problem of BM25 and cosine
+      similarity being on completely different scales — RRF works on ranks,
+      not raw scores. Hybrid consistently outperforms either method alone.
+
     Args:
         query: The search text
-        method: "semantic" or "keyword"
+        method: "semantic", "keyword", or "hybrid"
         top_k: Number of results to return
+        embedding_model: Optional override for the embedding model name
 
     Returns:
         List of dicts with text, score, filename, and page number,
@@ -354,42 +363,62 @@ async def search_chunks(
         return []
 
     if method == "semantic":
-        # Embed the query and compare against all chunk embeddings
-        query_embeddings = await models.embed(query)
-        query_vec = np.array(query_embeddings[0])
-
-        scores: list[tuple[float, int]] = []
-        for i, chunk in enumerate(_all_chunks):
-            chunk_vec = chunk["embedding"]
-            score = _cosine_similarity(query_vec, chunk_vec)
-            scores.append((score, i))
-
-        # Sort by score descending, take top_k
-        scores.sort(key=lambda x: x[0], reverse=True)
-        top = scores[:top_k]
+        return await _semantic_search(query, top_k, embedding_model)
 
     elif method == "keyword":
-        if _bm25 is None:
-            return []
+        return _keyword_search(query, top_k)
 
-        # BM25 scores the query against the tokenized corpus.
-        # Higher score = more relevant (based on term frequency,
-        # inverse document frequency, and document length normalization).
-        tokenized_query = query.lower().split()
-        bm25_scores = _bm25.get_scores(tokenized_query)
-        # Pair scores with indices and sort
-        indexed_scores = [(float(score), i) for i, score in enumerate(bm25_scores)]
-        indexed_scores.sort(key=lambda x: x[0], reverse=True)
-        top = indexed_scores[:top_k]
+    elif method == "hybrid":
+        # Reciprocal Rank Fusion: combine rankings from both methods.
+        # Fetch more candidates than needed (2x) so the fusion has
+        # enough overlap to produce good combined results.
+        semantic_results = await _semantic_search(query, top_k * 2, embedding_model)
+        keyword_results = _keyword_search(query, top_k * 2)
+        return _fuse_results(semantic_results, keyword_results, top_k)
 
     else:
         raise ValueError(
-            f"Unknown search method: {method}. Use 'semantic' or 'keyword'."
+            f"Unknown search method: {method}. Use 'semantic', 'keyword', or 'hybrid'."
         )
 
-    # Build result dicts (without the raw embedding — too large to return)
+
+async def _semantic_search(
+    query: str, top_k: int, embedding_model: str | None = None
+) -> list[dict[str, Any]]:
+    """Run semantic (embedding-based) search over all chunks."""
+    embed_kwargs: dict[str, Any] = {}
+    if embedding_model:
+        embed_kwargs["model"] = embedding_model
+
+    query_embeddings = await models.embed(query, **embed_kwargs)
+    query_vec = np.array(query_embeddings[0])
+
+    scores: list[tuple[float, int]] = []
+    for i, chunk in enumerate(_all_chunks):
+        chunk_vec = chunk["embedding"]
+        score = _cosine_similarity(query_vec, chunk_vec)
+        scores.append((score, i))
+
+    scores.sort(key=lambda x: x[0], reverse=True)
+    return _build_results(scores[:top_k])
+
+
+def _keyword_search(query: str, top_k: int) -> list[dict[str, Any]]:
+    """Run BM25 keyword search over all chunks."""
+    if _bm25 is None:
+        return []
+
+    tokenized_query = query.lower().split()
+    bm25_scores = _bm25.get_scores(tokenized_query)
+    indexed_scores = [(float(score), i) for i, score in enumerate(bm25_scores)]
+    indexed_scores.sort(key=lambda x: x[0], reverse=True)
+    return _build_results(indexed_scores[:top_k])
+
+
+def _build_results(scored_indices: list[tuple[float, int]]) -> list[dict[str, Any]]:
+    """Convert (score, chunk_index) pairs into result dicts."""
     results: list[dict[str, Any]] = []
-    for score, idx in top:
+    for score, idx in scored_indices:
         chunk = _all_chunks[idx]
         results.append(
             {
@@ -400,6 +429,51 @@ async def search_chunks(
                 "chunk_index": chunk["chunk_index"],
             }
         )
+    return results
+
+
+def _fuse_results(
+    semantic: list[dict[str, Any]],
+    keyword: list[dict[str, Any]],
+    top_k: int,
+    k: int = 60,
+) -> list[dict[str, Any]]:
+    """Combine two ranked result lists using Reciprocal Rank Fusion (RRF).
+
+    RRF assigns each result a score of 1/(rank + k) where k is a constant
+    (typically 60). Results that appear in both lists get their scores summed.
+    This produces a combined ranking that's better than either individual
+    method because semantic search catches meaning while keyword search
+    catches exact terms.
+
+    Why RRF instead of score averaging?
+    BM25 scores range 0-30+ while cosine similarity ranges 0-1. You can't
+    meaningfully average them without normalization, and normalization is
+    fragile (depends on the score distribution). RRF sidesteps this entirely
+    by working with ranks, not scores.
+    """
+    # Build a map of chunk_index -> fused score
+    fused: dict[int, float] = {}
+    chunk_data: dict[int, dict[str, Any]] = {}
+
+    for rank, result in enumerate(semantic):
+        ci = result["chunk_index"]
+        fused[ci] = fused.get(ci, 0) + 1.0 / (rank + k)
+        chunk_data[ci] = result
+
+    for rank, result in enumerate(keyword):
+        ci = result["chunk_index"]
+        fused[ci] = fused.get(ci, 0) + 1.0 / (rank + k)
+        chunk_data[ci] = result
+
+    # Sort by fused score descending
+    sorted_chunks = sorted(fused.items(), key=lambda x: x[1], reverse=True)
+
+    results: list[dict[str, Any]] = []
+    for ci, score in sorted_chunks[:top_k]:
+        entry = dict(chunk_data[ci])
+        entry["score"] = round(score, 4)
+        results.append(entry)
 
     return results
 

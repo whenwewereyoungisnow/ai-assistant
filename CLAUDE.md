@@ -30,13 +30,16 @@ every line, but the "why" behind architectural choices.
 
 This is a multi-file project. Each feature gets its own file:
 
-- main.py — FastAPI app, routes, startup
+- main.py — FastAPI app, routes, startup, settings/export/search endpoints
+- streams.py — SSE event stream generators (chat, documents, writing)
 - models.py — All Ollama API calls (shared by every feature)
 - router.py — Question classifier + model routing logic
-- documents.py — Document upload, chunking, search (RAG)
+- documents.py — Document upload, chunking, search (RAG + hybrid)
 - writer.py — Multi-agent writing pipeline
+- settings.py — Persistent settings (SQLite key-value + in-memory cache)
+- logging_middleware.py — Request logging middleware
 - personas.py — Custom persona CRUD and built-in personas
-- database.py — SQLite conversation storage
+- database.py — SQLite conversation storage + message search
 - templates/index.html — Full frontend (HTML + JS + CSS)
 
 Do NOT put everything in main.py. Do NOT create unnecessary files.

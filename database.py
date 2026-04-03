@@ -34,7 +34,7 @@ Role = Literal["user", "assistant", "system"]
 DB_PATH = Path(__file__).parent / "data" / "assistant.db"
 
 
-def _connect() -> sqlite3.Connection:
+def connect() -> sqlite3.Connection:
     """Create a connection to the SQLite database.
 
     sqlite3.Row makes rows behave like dicts — you can access columns by name
@@ -57,7 +57,7 @@ def init_db() -> None:
     IF NOT EXISTS is a no-op — safe to call every time.
     """
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = _connect()
+    conn = connect()
     try:
         # The conversations table tracks each chat session.
         # - id: A UUID string (e.g. "a1b2c3d4-..."). We use UUIDs instead of
@@ -128,7 +128,7 @@ def create_conversation(mode: Mode, title: str | None = None) -> str:
     conversation_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
-    conn = _connect()
+    conn = connect()
     try:
         conn.execute(
             "INSERT INTO conversations (id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -147,7 +147,7 @@ def list_conversations() -> list[dict[str, Any]]:
     This is a common SQL pattern: use a correlated subquery to add
     computed columns without a separate query.
     """
-    conn = _connect()
+    conn = connect()
     try:
         rows = conn.execute("""
             SELECT c.*,
@@ -167,7 +167,7 @@ def get_conversation(conversation_id: str) -> dict[str, Any] | None:
     Messages are ordered by created_at so they appear in chronological order.
     Metadata is parsed from JSON text back into a Python dict.
     """
-    conn = _connect()
+    conn = connect()
     try:
         row = conn.execute(
             "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
@@ -220,7 +220,7 @@ def add_message(
     now = datetime.now(timezone.utc).isoformat()
     metadata_json = json.dumps(metadata) if metadata is not None else None
 
-    conn = _connect()
+    conn = connect()
     try:
         conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -242,7 +242,7 @@ def update_conversation_title(conversation_id: str, title: str) -> None:
     Typically called after the first user message to set a meaningful title
     instead of the default "New conversation".
     """
-    conn = _connect()
+    conn = connect()
     try:
         conn.execute(
             "UPDATE conversations SET title = ? WHERE id = ?",
@@ -260,7 +260,7 @@ def delete_conversation(conversation_id: str) -> bool:
     conversation row automatically deletes all associated messages — no
     need for a separate DELETE FROM messages query.
     """
-    conn = _connect()
+    conn = connect()
     try:
         cursor = conn.execute(
             "DELETE FROM conversations WHERE id = ?", (conversation_id,)
@@ -269,3 +269,80 @@ def delete_conversation(conversation_id: str) -> bool:
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+
+def count_conversations() -> int:
+    """Return total number of conversations. Faster than list_conversations()."""
+    conn = connect()
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()
+        return row[0]
+    finally:
+        conn.close()
+
+
+def search_messages(query: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Search message content across all conversations.
+
+    Uses SQLite's LIKE for simple substring matching — fast enough for a
+    personal app with thousands of messages. Returns conversations that
+    contain matching messages, with a content snippet from the first match.
+
+    Why not full-text search (FTS5)?
+    FTS5 would be faster for large datasets, but requires creating a
+    virtual table and keeping it in sync. For a single-user app, LIKE
+    is simpler and works fine up to ~100k messages.
+
+    Args:
+        query: Text to search for (case-insensitive substring match)
+        limit: Maximum number of results to return
+
+    Returns:
+        List of dicts with conversation info + matching snippet.
+    """
+    # Escape LIKE wildcards so % and _ in the query are treated as literal
+    # characters. Without this, searching for "100%" would match "1000" etc.
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    conn = connect()
+    try:
+        # Search messages and group by conversation so each conversation
+        # appears at most once. We grab the first matching message as a
+        # snippet so the user can see why the conversation matched.
+        rows = conn.execute(
+            """
+            SELECT c.id, c.title, c.mode, c.updated_at,
+                   m.content AS snippet, m.role
+            FROM messages m
+            JOIN conversations c ON c.id = m.conversation_id
+            WHERE m.content LIKE ? ESCAPE '\'
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC
+            LIMIT ?
+            """,
+            (f"%{escaped}%", limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict = dict(row)
+        # Trim the snippet to ~150 chars around the match for display
+        content = row_dict["snippet"]
+        lower_content = content.lower()
+        idx = lower_content.find(query.lower())
+        if idx != -1:
+            start = max(0, idx - 60)
+            end = min(len(content), idx + len(query) + 60)
+            snippet = (
+                ("..." if start > 0 else "")
+                + content[start:end]
+                + ("..." if end < len(content) else "")
+            )
+        else:
+            snippet = content[:150] + ("..." if len(content) > 150 else "")
+        row_dict["snippet"] = snippet
+        results.append(row_dict)
+
+    return results

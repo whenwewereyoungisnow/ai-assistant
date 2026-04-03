@@ -64,6 +64,8 @@ SYSTEM_PROMPT = (
 async def route_and_respond(
     question: str,
     conversation_history: list[dict[str, str]],
+    routes: list[dict[str, Any]] | None = None,
+    system_prompt: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Classify a question, pick the right model, and stream the response.
 
@@ -79,6 +81,9 @@ async def route_and_respond(
         conversation_history: Previous messages in OpenAI format:
             [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
             This is loaded from the database and passed in so the model has context.
+        routes: Optional route config list. If None, uses the module-level ROUTES.
+                Allows the caller to pass dynamically-built routes from settings.
+        system_prompt: Optional override for the chat system prompt.
 
     Why pass conversation_history as a parameter instead of loading it here?
     Because the caller (main.py) already has the conversation_id and handles
@@ -86,6 +91,8 @@ async def route_and_respond(
     to test — you can call route_and_respond() with fake history without
     needing a real database.
     """
+    active_routes = routes or ROUTES
+    active_prompt = system_prompt or SYSTEM_PROMPT
     total_start = time.monotonic()
 
     # Step 1: Classify the question to pick a route.
@@ -93,7 +100,8 @@ async def route_and_respond(
     # under 500ms. We time it so the frontend can show routing latency.
     classify_start = time.monotonic()
     classification = await models.classify(
-        question, [{"name": r["name"], "description": r["description"]} for r in ROUTES]
+        question,
+        [{"name": r["name"], "description": r["description"]} for r in active_routes],
     )
     classify_ms = round((time.monotonic() - classify_start) * 1000)
 
@@ -101,9 +109,9 @@ async def route_and_respond(
     # the classifier returns something unexpected, we get a safe "general"
     # response instead of a confusing StopIteration crash.
     route_name = classification["route"]
-    route = next((r for r in ROUTES if r["name"] == route_name), None)
+    route = next((r for r in active_routes if r["name"] == route_name), None)
     if route is None:
-        route = ROUTES[0]
+        route = active_routes[0]
         route_name = route["name"]
 
     yield {
@@ -118,7 +126,7 @@ async def route_and_respond(
     # The pattern is: system prompt → conversation history → new user message.
     # The system prompt goes first so the model knows its role before seeing
     # any conversation. History provides context for follow-up questions.
-    messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages: list[dict[str, str]] = [{"role": "system", "content": active_prompt}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": question})
 

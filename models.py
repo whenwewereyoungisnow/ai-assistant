@@ -260,14 +260,17 @@ async def classify(question: str, routes: list[dict[str, str]]) -> dict[str, str
         return {"route": "general", "reason": "classification failed, using fallback"}
 
 
-async def embed(texts: str | list[str]) -> list[list[float]]:
+async def embed(
+    texts: str | list[str], model: str = "qwen3-embedding:4b"
+) -> list[list[float]]:
     """Generate embedding vectors for one or more texts.
 
-    Uses qwen3-embedding:4b for semantic search in the RAG pipeline. The model
-    loads briefly when needed and doesn't need to stay resident.
+    Uses qwen3-embedding:4b by default for semantic search in the RAG pipeline.
+    The model parameter can be overridden via settings.
 
     Args:
         texts: A single string or list of strings to embed
+        model: Ollama embedding model name (default: qwen3-embedding:4b)
 
     Returns:
         List of embedding vectors (one per input text). Each vector is a list
@@ -279,7 +282,7 @@ async def embed(texts: str | list[str]) -> list[list[float]]:
 
     response = await get_client().post(
         "/api/embed",
-        json={"model": "qwen3-embedding:4b", "input": texts},
+        json={"model": model, "input": texts},
     )
     response.raise_for_status()
     data = response.json()
