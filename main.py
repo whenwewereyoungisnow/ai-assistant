@@ -84,6 +84,42 @@ async def get_models() -> list[dict[str, Any]]:
     return await models.list_models()
 
 
+@app.get("/status")
+async def get_status() -> dict[str, Any]:
+    """System status: loaded models, document counts, conversations, GPU memory.
+
+    This powers the frontend status bar. It combines data from three sources:
+    - Ollama's /api/ps (running models, VRAM usage)
+    - In-memory document store (document and chunk counts)
+    - SQLite database (conversation count)
+    """
+    loop = asyncio.get_running_loop()
+
+    # Running models from Ollama (includes size_vram per model).
+    # Ollama may be down — don't let that break the whole status response.
+    # The document and conversation counts are still useful without Ollama.
+    try:
+        running = await models.running_models()
+    except Exception:
+        running = []
+
+    # Conversation count (sync SQLite call, offloaded to thread pool)
+    conversations = await loop.run_in_executor(None, database.list_conversations)
+
+    # GPU VRAM: sum of size_vram across all loaded models.
+    # Ollama reports size_vram in bytes — convert to GB for display.
+    total_vram_bytes = sum(m.get("size_vram", 0) for m in running)
+    total_vram_gb = round(total_vram_bytes / (1024**3), 1)
+
+    return {
+        "models": [m.get("name", "unknown") for m in running],
+        "documents": documents.document_count(),
+        "chunks": documents.chunk_count(),
+        "conversations": len(conversations),
+        "gpu_vram_gb": total_vram_gb,
+    }
+
+
 # --- Conversation endpoints ---
 
 
@@ -186,6 +222,28 @@ RAG_SYSTEM_PROMPT = (
 RAG_MODEL = "qwen3.5:35b-a3b-coding-nvfp4"
 RAG_MODEL_OPTIONS: dict[str, Any] = {"think": False}
 
+# --- Cross-mode intelligence ---
+#
+# How auto-detection works:
+# When a user asks a question in chat mode, we check if any uploaded documents
+# contain relevant information by running a quick semantic search. If the top
+# results exceed a score threshold, we augment the chat message with those
+# excerpts — the model sees them as additional context and can reference them.
+#
+# Why cross-mode features make the assistant feel more intelligent:
+# Without cross-mode, the user must manually switch to "Documents" mode to
+# ask about their PDFs. With it, the assistant automatically detects when
+# uploaded documents are relevant and incorporates them — like a colleague
+# who remembers "oh, I read something about that in the report you shared."
+# This makes three separate tools feel like one unified, context-aware assistant.
+#
+# The threshold is intentionally conservative (0.55). Cosine similarity from
+# qwen3-embedding:4b ranges roughly 0.3 (unrelated) to 0.9 (very similar).
+# 0.55 catches genuinely relevant content without false positives from
+# vaguely related chunks. Easy to tune — it's a single constant.
+DOC_RELEVANCE_THRESHOLD = 0.55
+DOC_CONSULT_TOP_K = 3
+
 
 @app.post("/chat/{conversation_id}")
 async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceResponse:
@@ -265,9 +323,51 @@ async def _chat_event_stream(
     """
     full_content = ""
     routing_metadata: dict[str, Any] = {}
+    doc_sources: list[dict[str, Any]] = []
 
     try:
-        async for event in router.route_and_respond(message, history):
+        # --- Cross-mode: auto-consult documents if relevant ---
+        # If the user has uploaded documents, we check whether their chat
+        # question relates to the document content. If so, we inject the
+        # relevant excerpts into the message so the routed model can
+        # reference them. The original message is already saved to the DB
+        # (line above), so the augmented version is ephemeral.
+        # Document consultation is best-effort — if the embedding model
+        # fails to load or Ollama is down, we skip it silently and proceed
+        # with the normal chat flow. The user shouldn't lose chat because
+        # a secondary feature had an error.
+        effective_message = message
+        if documents.has_documents():
+            try:
+                results = await documents.search_chunks(
+                    message, method="semantic", top_k=DOC_CONSULT_TOP_K
+                )
+                relevant = [r for r in results if r["score"] > DOC_RELEVANCE_THRESHOLD]
+            except Exception:
+                relevant = []
+            if relevant:
+                doc_sources = relevant
+                excerpts = "\n\n".join(
+                    f"[{s['filename']}, page {s['page']}]: {s['text']}"
+                    for s in relevant
+                )
+                effective_message = (
+                    f"{message}\n\n"
+                    f"[Relevant context from uploaded documents — "
+                    f"use if helpful, cite source when referencing]\n"
+                    f"{excerpts}"
+                )
+                yield {
+                    "event": "doc_consulted",
+                    "data": json.dumps(
+                        {
+                            "sources": relevant,
+                            "message": "Answer informed by uploaded documents",
+                        }
+                    ),
+                }
+
+        async for event in router.route_and_respond(effective_message, history):
             if event["type"] == "routing":
                 routing_metadata = event
                 yield {
@@ -294,6 +394,17 @@ async def _chat_event_stream(
                     "stream_ms": event.get("stream_ms", 0),
                     "total_ms": event.get("total_ms", 0),
                 }
+                # Save which documents were auto-consulted so the UI can
+                # re-display the indicator when reloading the conversation.
+                if doc_sources:
+                    metadata["doc_consulted"] = [
+                        {
+                            "filename": s["filename"],
+                            "page": s["page"],
+                            "score": s["score"],
+                        }
+                        for s in doc_sources
+                    ]
                 await asyncio.get_running_loop().run_in_executor(
                     None,
                     database.add_message,
@@ -508,7 +619,46 @@ async def _writing_event_stream(
     user sees activity during swaps instead of a blank screen.
     """
     try:
-        async for event in writer.run_pipeline(message, history):
+        # --- Cross-mode: check if documents can inform the writing ---
+        # Same approach as chat mode: semantic search for relevant chunks,
+        # filter by threshold, and pass as research context to the writer.
+        # Best-effort — if the embedding model fails, skip silently.
+        doc_context = None
+        doc_sources: list[dict[str, Any]] = []
+        if documents.has_documents():
+            try:
+                results = await documents.search_chunks(
+                    message, method="semantic", top_k=DOC_CONSULT_TOP_K
+                )
+                relevant = [r for r in results if r["score"] > DOC_RELEVANCE_THRESHOLD]
+            except Exception:
+                relevant = []
+            if relevant:
+                doc_sources = relevant
+                doc_context = "\n\n".join(
+                    f"[{s['filename']}, page {s['page']}]: {s['text']}"
+                    for s in relevant
+                )
+                yield {
+                    "event": "doc_consulted",
+                    "data": json.dumps(
+                        {
+                            "sources": [
+                                {
+                                    "filename": s["filename"],
+                                    "page": s["page"],
+                                    "score": s["score"],
+                                }
+                                for s in relevant
+                            ],
+                            "message": "Writing informed by uploaded documents",
+                        }
+                    ),
+                }
+
+        async for event in writer.run_pipeline(
+            message, history, doc_context=doc_context
+        ):
             if event["type"] == "phase_start":
                 yield {
                     "event": "writing",
@@ -535,13 +685,24 @@ async def _writing_event_stream(
                     if event["phase"] == "critique"
                     else writer.WRITER_MODEL
                 )
-                metadata = {
+                metadata: dict[str, Any] = {
                     "phase": event["phase"],
                     "round": event["round"],
                     "model": phase_model,
                     "duration_ms": event["duration_ms"],
                     "pipeline": True,
                 }
+                # Persist doc consultation info on the first phase so the
+                # banner re-appears when reloading the conversation.
+                if doc_sources and event["phase"] == "draft" and event["round"] == 1:
+                    metadata["doc_consulted"] = [
+                        {
+                            "filename": s["filename"],
+                            "page": s["page"],
+                            "score": s["score"],
+                        }
+                        for s in doc_sources
+                    ]
                 await asyncio.get_running_loop().run_in_executor(
                     None,
                     database.add_message,

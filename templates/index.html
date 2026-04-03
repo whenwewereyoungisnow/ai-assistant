@@ -741,6 +741,78 @@
             margin-top: 4px;
         }
 
+        /* --- Status bar at the bottom of the main area ---
+           Shows loaded models, document counts, and GPU memory.
+           Polled from /status every 12 seconds. */
+        .status-bar {
+            padding: 4px 20px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            font-size: 11px;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+        }
+
+        .status-bar .status-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .status-bar .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--success);
+            flex-shrink: 0;
+        }
+
+        /* --- Document consultation banner ---
+           Shown in chat mode when documents are auto-consulted, and in
+           writing mode when documents inform the draft. Clickable to
+           expand/collapse source details. */
+        .doc-consulted-banner {
+            max-width: 780px;
+            width: 100%;
+            margin: 0 auto 8px;
+            padding: 8px 12px;
+            background: rgba(74, 158, 255, 0.08);
+            border: 1px solid rgba(74, 158, 255, 0.15);
+            border-radius: 8px;
+            font-size: 12px;
+            color: var(--accent);
+            cursor: pointer;
+        }
+
+        .doc-consulted-banner:hover {
+            background: rgba(74, 158, 255, 0.12);
+        }
+
+        .doc-consulted-banner .banner-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .doc-consulted-banner .banner-details {
+            display: none;
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid rgba(74, 158, 255, 0.1);
+        }
+
+        .doc-consulted-banner .banner-details.open {
+            display: block;
+        }
+
+        .doc-consulted-banner .source-ref {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin: 2px 0;
+        }
+
         /* --- Toast --- */
         .toast {
             position: fixed;
@@ -825,6 +897,10 @@
                 <button class="send-btn" id="sendBtn" onclick="sendMessage()">Send</button>
             </div>
         </div>
+
+        <div class="status-bar" id="statusBar">
+            <span class="status-item"><span class="status-dot"></span> Connecting...</span>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -854,6 +930,41 @@
             },
             breaks: true,
         });
+
+        // =========================================================
+        // System status polling
+        // =========================================================
+        // Fetches /status every 12 seconds to show loaded models,
+        // document counts, and GPU memory in the bottom status bar.
+
+        async function pollStatus() {
+            try {
+                const res = await fetch('/status');
+                if (!res.ok) return;
+                const data = await res.json();
+
+                // Shorten model names for display (e.g. "qwen3.5:35b..." → "qwen3.5")
+                const modelNames = data.models.length > 0
+                    ? data.models.map(m => m.split(':')[0]).join(', ')
+                    : 'none loaded';
+
+                const bar = document.getElementById('statusBar');
+                bar.innerHTML = `
+                    <span class="status-item">
+                        <span class="status-dot"></span>
+                        Models: ${escapeHtml(modelNames)}
+                    </span>
+                    <span class="status-item">Docs: ${data.documents} (${data.chunks} chunks)</span>
+                    <span class="status-item">GPU: ${data.gpu_vram_gb} GB</span>
+                `;
+            } catch (e) {
+                // Status polling is non-critical — silently ignore errors
+                // (e.g. if Ollama is restarting or the server is briefly down)
+            }
+        }
+
+        pollStatus();
+        setInterval(pollStatus, 12000);
 
         // =========================================================
         // Mode switching
@@ -1024,6 +1135,7 @@
                 setTimeout(() => { progress.textContent = ''; }, 3000);
 
                 await loadDocuments();
+                pollStatus();
             } catch (err) {
                 showToast('Upload error: ' + err.message);
                 progress.textContent = '';
@@ -1033,6 +1145,7 @@
         async function deleteDocument(filename) {
             await fetch(`/documents/${encodeURIComponent(filename)}`, { method: 'DELETE' });
             await loadDocuments();
+            pollStatus();
         }
 
         // --- Upload zone event handlers ---
@@ -1102,6 +1215,12 @@
                     continue;
                 }
 
+                // For assistant messages that auto-consulted documents in chat/writing
+                // mode, show the consultation banner above the response.
+                if (msg.role === 'assistant' && msg.metadata && msg.metadata.doc_consulted && msg.metadata.doc_consulted.length > 0) {
+                    container.appendChild(createDocConsultedBanner(msg.metadata.doc_consulted));
+                }
+
                 // For assistant messages with sources metadata, render sources
                 // section above the response. This handles both live streaming
                 // and reloading saved conversations from the database.
@@ -1157,6 +1276,38 @@
             }
 
             return div;
+        }
+
+        /**
+         * Create a document consultation banner for reloaded conversations.
+         * Used when a chat or writing response was informed by uploaded documents.
+         * The banner is clickable to show/hide source details.
+         */
+        function createDocConsultedBanner(sources, message) {
+            const banner = document.createElement('div');
+            banner.className = 'doc-consulted-banner';
+            const label = message || 'Answer informed by uploaded documents';
+
+            const detailsHtml = sources.map(s =>
+                `<div class="source-ref">${escapeHtml(s.filename)}, page ${escapeHtml(String(s.page))} — ${Math.round((s.score || 0) * 100)}% match</div>`
+            ).join('');
+
+            banner.innerHTML = `
+                <div class="banner-header">
+                    \u{1F4C4} ${escapeHtml(label)}
+                    <span style="margin-left: auto; font-size: 10px; color: var(--text-muted);">\u25B6 details</span>
+                </div>
+                <div class="banner-details">${detailsHtml}</div>
+            `;
+
+            banner.addEventListener('click', () => {
+                const details = banner.querySelector('.banner-details');
+                details.classList.toggle('open');
+                const arrow = banner.querySelector('.banner-header span:last-child');
+                arrow.textContent = details.classList.contains('open') ? '\u25BC details' : '\u25B6 details';
+            });
+
+            return banner;
         }
 
         /**
@@ -1458,6 +1609,18 @@
 
                             contentDiv = assistantDiv.querySelector('.message-content');
                             messagesContainer.appendChild(assistantDiv);
+                            scrollToBottom();
+                        }
+
+                        // --- Cross-mode: document consultation indicator ---
+                        // When chat or writing mode auto-detects relevant uploaded
+                        // documents, the backend sends a "doc_consulted" event.
+                        // We show a subtle banner that the user can click to see
+                        // which documents influenced the response.
+                        else if (eventType === 'doc_consulted') {
+                            const sources = parsed.sources || [];
+                            const banner = createDocConsultedBanner(sources, parsed.message);
+                            messagesContainer.appendChild(banner);
                             scrollToBottom();
                         }
 

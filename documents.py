@@ -409,6 +409,21 @@ async def search_chunks(
 # ---------------------------------------------------------------------------
 
 
+def has_documents() -> bool:
+    """Return True if any documents are loaded in memory."""
+    return bool(_all_chunks)
+
+
+def document_count() -> int:
+    """Return the number of uploaded documents."""
+    return len(_documents)
+
+
+def chunk_count() -> int:
+    """Return the total number of chunks across all documents."""
+    return len(_all_chunks)
+
+
 def list_documents() -> list[dict[str, Any]]:
     """Return metadata for all uploaded documents.
 

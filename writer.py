@@ -62,6 +62,7 @@ async def run_pipeline(
     prompt: str,
     history: list[dict[str, str]],
     max_rounds: int = 3,
+    doc_context: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run the write-critique-revise pipeline, yielding events for each phase.
 
@@ -113,8 +114,23 @@ async def run_pipeline(
         # The pattern is: system prompt, then the user's original request,
         # then alternating draft/critique pairs from prior rounds, then
         # (for revisions) a final instruction to revise.
+        #
+        # If doc_context is provided, it means the user has uploaded documents
+        # that are relevant to this writing prompt. We augment the system prompt
+        # with the research material so the Writer can reference specific
+        # findings. This is the cross-mode intelligence at work — the writing
+        # pipeline becomes research-aware without the user switching modes.
+        system_prompt = WRITER_SYSTEM_PROMPT
+        if doc_context:
+            system_prompt = (
+                f"{WRITER_SYSTEM_PROMPT}\n\n"
+                "You have access to research documents. Reference specific "
+                "findings when relevant. Here is the research material:\n\n"
+                f"{doc_context}"
+            )
+
         writer_messages: list[dict[str, str]] = [
-            {"role": "system", "content": WRITER_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ]
 
