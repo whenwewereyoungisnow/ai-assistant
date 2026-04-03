@@ -33,6 +33,8 @@ DEFAULTS: dict[str, Any] = {
     "rag_model": "qwen3.5:35b-a3b-coding-nvfp4",
     "writer_model": "qwen3.5:35b-a3b-coding-nvfp4",
     "editor_model": "deepseek-r1:32b",
+    # Vision
+    "vision_model": "gemma4:31b",
     # Writing pipeline
     "max_writing_rounds": 3,
     # Document search

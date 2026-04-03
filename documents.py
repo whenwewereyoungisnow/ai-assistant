@@ -1,21 +1,14 @@
 # documents.py — Document processing, storage, and search (RAG pipeline)
 #
-# This module handles the "Documents" mode of the assistant: upload a PDF,
-# extract its text, split it into searchable chunks, generate embedding
-# vectors, and search those chunks by meaning (semantic) or keywords (BM25).
+# This module handles the "Documents" mode of the assistant: upload documents
+# (PDF, TXT, MD, DOCX, CSV), extract text, split into searchable chunks,
+# generate embedding vectors, and search those chunks by meaning or keywords.
 #
-# Why store everything in memory instead of a database?
-# For a personal assistant with dozens of documents, in-memory storage is:
-#   1. Fast — cosine similarity on 10k chunks takes < 1ms with numpy
-#   2. Simple — no extra infrastructure to install (no Pinecone, ChromaDB, pgvector)
-#   3. Good enough — a single user won't have thousands of documents
-#
-# When would you switch to a vector database?
-# When you have thousands of documents, need persistence across server restarts,
-# want filtered queries (e.g. "search only in documents from 2024"), or need
-# multi-user support. For now, re-uploading after restart is fine — the tradeoff
-# is simplicity over durability.
+# Each file type has its own processor function, but they all share the same
+# pipeline: extract text -> clean -> chunk -> embed -> store in memory + SQLite.
 
+import csv
+import io
 import re
 from pathlib import Path
 from typing import Any
@@ -26,6 +19,9 @@ from rank_bm25 import BM25Okapi
 
 import database
 import models
+
+# Supported file types for upload. Auto-detected from extension.
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx", ".csv"}
 
 # ---------------------------------------------------------------------------
 # In-memory document store
@@ -207,32 +203,137 @@ def _chunk_text(
 
 
 # ---------------------------------------------------------------------------
-# Document processing
+# Markdown stripping (for .md files)
+# ---------------------------------------------------------------------------
+
+
+def _strip_markdown(text: str) -> str:
+    """Remove markdown formatting before chunking .md files.
+
+    We strip formatting because the embedding model should match on the
+    actual content ("install Python"), not the formatting syntax
+    ("## Install Python"). Paragraph structure (double newlines) is
+    preserved since _chunk_text() uses it as a split boundary.
+    """
+    # Remove code fences but keep the code content
+    text = re.sub(r"```[\w]*\n?", "", text)
+    # Remove images: ![alt](url)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", text)
+    # Convert links to just text: [text](url) -> text
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    # Remove heading markers (# ## ### etc.) but keep the text
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    # Remove bold/italic markers
+    text = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", text)
+    text = re.sub(r"_{1,3}([^_]+)_{1,3}", r"\1", text)
+    # Remove horizontal rules
+    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+    # Remove blockquote markers
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Shared embedding + storage pipeline
+# ---------------------------------------------------------------------------
+
+
+async def _embed_and_store(
+    filename: str,
+    full_text: str,
+    page_count: int,
+    page_texts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Chunk text, generate embeddings, and store in memory + SQLite.
+
+    This is the shared pipeline that all file-type processors call after
+    extracting their text. It handles:
+    1. Splitting text into overlapping chunks
+    2. Assigning each chunk to a page (if page_texts provided)
+    3. Batch-embedding all chunks via Ollama
+    4. Storing in the in-memory index and persisting to SQLite
+
+    Args:
+        filename: Document identifier (original filename)
+        full_text: The extracted, cleaned text content
+        page_count: Number of pages (1 for non-paginated formats)
+        page_texts: Optional per-page text for accurate page assignment.
+                    Only PDFs provide this; other formats set page=1.
+
+    Returns:
+        Summary dict: {"filename", "pages", "chunks", "replaced"}
+    """
+    chunk_texts = _chunk_text(full_text)
+
+    if not chunk_texts:
+        raise ValueError(f"No text could be extracted from {filename}")
+
+    # Page assignment: for PDFs we match chunks to pages using text overlap.
+    # For other formats (txt, md, docx, csv) everything maps to page 1.
+    def _find_page(chunk_text: str) -> int:
+        if not page_texts:
+            return 1
+        sample_start = min(60, len(chunk_text) // 3)
+        sample = chunk_text[sample_start : sample_start + 80]
+        for page_info in page_texts:
+            if sample in page_info["text"]:
+                return page_info["page"]
+        for page_info in page_texts:
+            if chunk_text[:80] in page_info["text"]:
+                return page_info["page"]
+        return 1
+
+    # Generate embeddings in batches of 20
+    batch_size = 20
+    all_embeddings: list[list[float]] = []
+    try:
+        for i in range(0, len(chunk_texts), batch_size):
+            batch = chunk_texts[i : i + batch_size]
+            embeddings = await models.embed(batch)
+            all_embeddings.extend(embeddings)
+    except Exception as e:
+        raise ValueError(f"Failed to generate embeddings for {filename}: {e}") from e
+
+    # Build chunk dicts
+    chunks: list[dict[str, Any]] = []
+    for i, (text, embedding) in enumerate(zip(chunk_texts, all_embeddings)):
+        chunks.append(
+            {
+                "text": text,
+                "embedding": np.array(embedding),
+                "filename": filename,
+                "page": _find_page(text),
+                "chunk_index": i,
+            }
+        )
+
+    # Store in memory and persist to SQLite
+    was_replaced = filename in _documents
+    _documents[filename] = {
+        "filename": filename,
+        "pages": page_count,
+        "chunks": chunks,
+    }
+    _rebuild_search_index()
+    database.save_chunks(filename, chunks)
+
+    return {
+        "filename": filename,
+        "pages": page_count,
+        "chunks": len(chunks),
+        "replaced": was_replaced,
+    }
+
+
+# ---------------------------------------------------------------------------
+# File-type processors
 # ---------------------------------------------------------------------------
 
 
 async def process_pdf(file_path: Path, filename: str) -> dict[str, Any]:
-    """Extract text from a PDF, chunk it, embed the chunks, and store them.
-
-    This is the main entry point for document upload. It:
-    1. Opens the PDF with PyMuPDF and extracts text page by page
-    2. Cleans artifacts from the extracted text
-    3. Splits into overlapping chunks (~500 chars each)
-    4. Generates embedding vectors for each chunk via Ollama
-    5. Stores everything in memory for search
-
-    Args:
-        file_path: Path to the uploaded PDF file on disk
-        filename: Original filename (used as the document identifier)
-
-    Returns:
-        Summary dict: {"filename": str, "pages": int, "chunks": int}
-    """
+    """Extract text from a PDF, chunk it, embed, and store."""
     import pymupdf
 
-    # Extract text from each page. PyMuPDF is fast and handles most PDF
-    # layouts well. Each page's text is tracked separately so we can
-    # record which page each chunk came from.
     doc = pymupdf.open(file_path)
     pages: list[dict[str, Any]] = []
     full_text_parts: list[str] = []
@@ -246,88 +347,146 @@ async def process_pdf(file_path: Path, filename: str) -> dict[str, Any]:
             full_text_parts.append(cleaned)
 
     doc.close()
-    page_count = len(pages)
 
     if not full_text_parts:
         raise ValueError(f"No text could be extracted from {filename}")
 
-    # Combine all pages and chunk the full text
     full_text = "\n\n".join(full_text_parts)
-    chunk_texts = _chunk_text(full_text)
+    return await _embed_and_store(filename, full_text, len(pages), page_texts=pages)
 
-    # Figure out which page each chunk belongs to by checking which page's
-    # text contains the start of the chunk. This is a heuristic — chunks
-    # that span page boundaries get assigned to the page where they start.
-    def _find_page(chunk_text: str) -> int:
-        # Sample from the middle of the chunk to avoid the overlap region
-        # at the start, which may come from a different page.
-        sample_start = min(60, len(chunk_text) // 3)
-        sample = chunk_text[sample_start : sample_start + 80]
-        for page_info in pages:
-            if sample in page_info["text"]:
-                return page_info["page"]
-        # Fallback: try the original start
-        for page_info in pages:
-            if chunk_text[:80] in page_info["text"]:
-                return page_info["page"]
-        return 1
 
-    # Generate embeddings for all chunks.
-    # How embedding works:
-    # An embedding model converts text into a dense vector of numbers
-    # (e.g., 1024 floats). Texts with similar meaning end up close together
-    # in this vector space — "happy" and "joyful" would have similar vectors,
-    # while "happy" and "database" would be far apart. This lets us find
-    # relevant chunks by comparing vectors instead of matching exact words.
-    #
-    # We batch chunks (20 at a time) to avoid sending huge payloads to Ollama.
-    # Each API call embeds multiple texts in one pass, which is much faster
-    # than embedding one at a time.
-    batch_size = 20
-    all_embeddings: list[list[float]] = []
+async def process_txt(file_path: Path, filename: str) -> dict[str, Any]:
+    """Process a plain text file (.txt).
+
+    Reads with utf-8 encoding, falling back to latin-1 if the file contains
+    non-UTF-8 bytes (common in older documents). latin-1 never fails because
+    every byte value 0-255 maps to a valid character.
+    """
     try:
-        for i in range(0, len(chunk_texts), batch_size):
-            batch = chunk_texts[i : i + batch_size]
-            embeddings = await models.embed(batch)
-            all_embeddings.extend(embeddings)
-    except Exception as e:
-        raise ValueError(f"Failed to generate embeddings for {filename}: {e}") from e
+        text = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = file_path.read_text(encoding="latin-1")
 
-    # Build chunk dicts with text, embedding, and metadata
-    chunks: list[dict[str, Any]] = []
-    for i, (text, embedding) in enumerate(zip(chunk_texts, all_embeddings)):
-        chunks.append(
-            {
-                "text": text,
-                "embedding": np.array(embedding),
-                "filename": filename,
-                "page": _find_page(text),
-                "chunk_index": i,
-            }
-        )
+    cleaned = _clean_text(text)
+    if not cleaned:
+        raise ValueError(f"No text found in {filename}")
 
-    # Store and rebuild search index. If a document with the same filename
-    # was already uploaded, this replaces it — we track that so the caller
-    # knows whether it was a fresh upload or a replacement.
-    was_replaced = filename in _documents
-    _documents[filename] = {
-        "filename": filename,
-        "pages": page_count,
-        "chunks": chunks,
-    }
-    _rebuild_search_index()
+    return await _embed_and_store(filename, cleaned, page_count=1)
 
-    # Persist chunks and embeddings to SQLite so they survive restarts.
-    # This runs after the in-memory store is updated so the app is usable
-    # immediately — the SQLite write is just for durability.
-    database.save_chunks(filename, chunks)
 
-    return {
-        "filename": filename,
-        "pages": page_count,
-        "chunks": len(chunks),
-        "replaced": was_replaced,
-    }
+async def process_md(file_path: Path, filename: str) -> dict[str, Any]:
+    """Process a Markdown file (.md).
+
+    Strips markdown formatting (headers, bold, links, code fences) before
+    chunking so the embedding model matches on content, not syntax.
+    """
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = file_path.read_text(encoding="latin-1")
+
+    stripped = _strip_markdown(text)
+    cleaned = _clean_text(stripped)
+    if not cleaned:
+        raise ValueError(f"No text found in {filename}")
+
+    return await _embed_and_store(filename, cleaned, page_count=1)
+
+
+async def process_docx(file_path: Path, filename: str) -> dict[str, Any]:
+    """Process a Word document (.docx).
+
+    Uses python-docx to extract paragraph text. DOCX files don't have
+    reliable page numbers without rendering (page breaks depend on fonts
+    and margins), so we estimate page count from text length.
+    """
+    from docx import Document
+
+    doc = Document(file_path)
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+
+    if not paragraphs:
+        raise ValueError(f"No text could be extracted from {filename}")
+
+    full_text = "\n\n".join(paragraphs)
+    cleaned = _clean_text(full_text)
+    # Rough page estimate: ~3000 chars per page
+    page_count = max(1, len(cleaned) // 3000 + 1)
+
+    return await _embed_and_store(filename, cleaned, page_count)
+
+
+async def process_csv(file_path: Path, filename: str) -> dict[str, Any]:
+    """Process a CSV file.
+
+    How CSV chunking works:
+    Unlike documents that flow as prose, CSVs are structured data with rows
+    and columns. Simply joining all cells into a wall of text would lose the
+    structure. Instead, we convert each row (or group of rows) into a
+    readable sentence-like format: "Row 1: name=Alice, age=30, city=Berlin".
+
+    Why we include column headers with each chunk:
+    If a chunk just says "Alice, 30, Berlin", the embedding model has no idea
+    what those values mean. Including headers as context ("name=Alice") lets
+    the model understand that "Alice" is a name and "Berlin" is a city, so
+    a search for "people in Berlin" can match correctly.
+    """
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = file_path.read_text(encoding="latin-1")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames:
+        raise ValueError(f"No columns found in {filename}")
+
+    # Convert rows to readable text with column headers as context
+    row_texts: list[str] = []
+    for i, row in enumerate(reader, 1):
+        parts = [
+            f"{col}={val}"
+            for col, val in row.items()
+            if col is not None and val and val.strip()
+        ]
+        if parts:
+            row_texts.append(f"Row {i}: {', '.join(parts)}")
+
+    if not row_texts:
+        raise ValueError(f"No data found in {filename}")
+
+    # Group rows into chunks of ~10 rows each for better context
+    chunk_size = 10
+    chunks: list[str] = []
+    header_line = f"Columns: {', '.join(reader.fieldnames)}"
+    for i in range(0, len(row_texts), chunk_size):
+        group = row_texts[i : i + chunk_size]
+        chunks.append(header_line + "\n" + "\n".join(group))
+
+    full_text = "\n\n".join(chunks)
+    return await _embed_and_store(filename, full_text, page_count=1)
+
+
+async def process_document(file_path: Path, filename: str) -> dict[str, Any]:
+    """Auto-detect file type and process accordingly.
+
+    This is the main entry point for document upload. It dispatches to the
+    appropriate processor based on the file extension.
+    """
+    ext = Path(filename).suffix.lower()
+
+    if ext == ".pdf":
+        return await process_pdf(file_path, filename)
+    elif ext == ".txt":
+        return await process_txt(file_path, filename)
+    elif ext == ".md":
+        return await process_md(file_path, filename)
+    elif ext == ".docx":
+        return await process_docx(file_path, filename)
+    elif ext == ".csv":
+        return await process_csv(file_path, filename)
+    else:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise ValueError(f"Unsupported file type '{ext}'. Supported: {supported}")
 
 
 # ---------------------------------------------------------------------------

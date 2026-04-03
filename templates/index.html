@@ -681,6 +681,117 @@
             padding-left: 16px;
         }
 
+        /* --- Persona selector --- */
+        .persona-select {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            max-width: 160px;
+        }
+
+        /* --- Vision mode image handling --- */
+        .vision-attach-btn {
+            background: none;
+            border: none;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px;
+            opacity: 0.6;
+            transition: opacity 0.15s;
+        }
+        .vision-attach-btn:hover { opacity: 1; }
+
+        .vision-preview {
+            padding: 8px 20px;
+            border-top: 1px solid var(--border);
+            background: var(--bg-secondary);
+        }
+        .vision-preview-inner {
+            max-width: 780px;
+            margin: 0 auto;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .vision-thumb {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+        .vision-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .vision-thumb-remove {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Inline images in vision messages */
+        .message-images {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 8px;
+        }
+        .message-images img {
+            max-width: 200px;
+            max-height: 150px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        /* --- Branch/retry hover actions on messages --- */
+        .message-actions {
+            display: none;
+            gap: 4px;
+            margin-top: 4px;
+            padding-left: 16px;
+        }
+        .message:hover .message-actions { display: flex; }
+
+        .msg-action-btn {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .msg-action-btn:hover {
+            color: var(--accent);
+            border-color: var(--accent);
+        }
+
+        /* Branch badge in sidebar */
+        .branch-badge {
+            font-size: 10px;
+            color: var(--success);
+            margin-left: 4px;
+        }
+
         /* --- Input area --- */
         .input-area {
             padding: 16px 20px;
@@ -1266,7 +1377,10 @@
             <button class="mode-btn active" data-mode="chat">&#x1F4AC; Chat</button>
             <button class="mode-btn" data-mode="documents">&#x1F4C4; Docs</button>
             <button class="mode-btn" data-mode="writing">&#x270D;&#xFE0F; Write</button>
-            <button class="mode-btn disabled" data-mode="vision">&#x1F441; Vision</button>
+            <button class="mode-btn" data-mode="vision">&#x1F441; Vision</button>
+            <div style="margin-left:8px;border-left:1px solid var(--border);padding-left:8px">
+                <select id="personaSelect" class="persona-select" onchange="onPersonaChange(this.value)" title="Select persona"></select>
+            </div>
             <div class="mode-bar-actions">
                 <button class="icon-btn" onclick="openSettings()" title="Settings (Cmd+,)">&#x2699;</button>
             </div>
@@ -1278,10 +1392,11 @@
             <div class="doc-panel-inner">
                 <div class="upload-zone" id="uploadZone">
                     <div class="upload-zone-text">
-                        <strong>Drop a PDF here</strong> or click to upload
+                        <strong>Drop a file here</strong> or click to upload
+                        <div style="font-size:11px;margin-top:4px;color:var(--text-muted)">PDF, TXT, MD, DOCX, CSV</div>
                     </div>
                     <div class="upload-progress" id="uploadProgress"></div>
-                    <input type="file" id="fileInput" accept=".pdf" style="display: none">
+                    <input type="file" id="fileInput" accept=".pdf,.txt,.md,.docx,.csv" style="display: none">
                 </div>
                 <div class="doc-list" id="docList"></div>
             </div>
@@ -1294,8 +1409,16 @@
             </div>
         </div>
 
+        <!-- Vision image preview (shown in vision mode when images are pending) -->
+        <div class="vision-preview" id="visionPreview" style="display:none">
+            <div class="vision-preview-inner" id="visionPreviewInner"></div>
+        </div>
+
         <div class="input-area">
             <div class="input-wrapper">
+                <!-- Vision mode: image attach button -->
+                <button class="vision-attach-btn" id="visionAttachBtn" style="display:none" onclick="document.getElementById('imageInput').click()" title="Attach image">&#x1F4F7;</button>
+                <input type="file" id="imageInput" accept="image/*" multiple style="display:none">
                 <textarea id="userInput"
                           placeholder="Type a message..."
                           rows="1"
@@ -1338,6 +1461,10 @@
             <div class="settings-group">
                 <label>Editor Model</label>
                 <select id="set-editor_model"></select>
+            </div>
+            <div class="settings-group">
+                <label>Vision Model</label>
+                <select id="set-vision_model"></select>
             </div>
             <div class="settings-group">
                 <label>Search Method</label>
@@ -1395,10 +1522,10 @@
         let currentConversationId = null;
         let currentMode = 'chat';
         let isStreaming = false;
+        let currentPersonaId = 'default';
+        let pendingImages = [];  // base64 strings for vision mode
 
-        // Writing pipeline state — tracked separately because the pipeline
-        // creates multiple content sections (one per phase) unlike chat/documents
-        // which have a single assistant message per response.
+        // Writing pipeline state
         let writingAbortController = null;
         let pipelineContainer = null;
         let currentPhaseDiv = null;
@@ -1455,8 +1582,9 @@
 
         const WELCOME_MESSAGES = {
             chat: "Ask me anything. I'll route your question to the best model automatically.",
-            documents: "Upload PDFs and ask questions about them. I'll search your documents and cite sources.",
+            documents: "Upload documents and ask questions about them. I'll search your files and cite sources.",
             writing: "Describe what you'd like written. A writer and editor will collaborate through multiple rounds to refine the result.",
+            vision: "Share images and ask questions about them. Drop, paste (Cmd+V), or click the camera button to attach.",
         };
 
         function switchMode(mode) {
@@ -1480,9 +1608,13 @@
             const placeholders = {
                 documents: 'Ask about your documents...',
                 writing: 'Describe what you\'d like written...',
+                vision: 'Ask about an image (attach or paste one)...',
             };
             document.getElementById('userInput').placeholder =
                 placeholders[mode] || 'Type a message...';
+
+            // Show/hide vision UI
+            updateVisionUI();
 
             // Reset conversation and reload sidebar for this mode
             currentConversationId = null;
@@ -1523,24 +1655,32 @@
             }
 
             const modeIcons = { chat: '\u{1F4AC}', documents: '\u{1F4C4}', writing: '\u270D\uFE0F', vision: '\u{1F441}' };
-            list.innerHTML = filtered.map(c => `
-                <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
-                     onclick="loadConversation('${c.id}')">
-                    <div class="conversation-item-info">
-                        <div class="conversation-title">${modeIcons[c.mode] || ''} ${escapeHtml(c.title)}</div>
-                        <div class="conversation-time">${timeAgo(c.updated_at)}</div>
+            list.innerHTML = filtered.map(c => {
+                const personaBadge = c.persona_icon && c.persona_id !== 'default'
+                    ? `<span style="font-size:11px" title="${escapeHtml(c.persona_name || '')}">${escapeHtml(c.persona_icon)}</span> `
+                    : '';
+                const branchBadge = c.branch_from_conversation_id
+                    ? '<span class="branch-badge" title="Branched conversation">&#x1F33F;</span>'
+                    : '';
+                return `
+                    <div class="conversation-item ${c.id === currentConversationId ? 'active' : ''}"
+                         onclick="loadConversation('${c.id}')">
+                        <div class="conversation-item-info">
+                            <div class="conversation-title">${modeIcons[c.mode] || ''} ${personaBadge}${escapeHtml(c.title)}${branchBadge}</div>
+                            <div class="conversation-time">${timeAgo(c.updated_at)}</div>
+                        </div>
+                        <button class="delete-btn" onclick="event.stopPropagation(); exportConversation('${c.id}')" title="Export" style="font-size:12px">&#x2B07;</button>
+                        <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${c.id}')" title="Delete">&#x2715;</button>
                     </div>
-                    <button class="delete-btn" onclick="event.stopPropagation(); exportConversation('${c.id}')" title="Export" style="font-size:12px">&#x2B07;</button>
-                    <button class="delete-btn" onclick="event.stopPropagation(); deleteConversation('${c.id}')" title="Delete">&#x2715;</button>
-                </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         async function newChat() {
             const res = await fetch('/conversations', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: currentMode }),
+                body: JSON.stringify({ mode: currentMode, persona_id: currentPersonaId }),
             });
             const data = await res.json();
             currentConversationId = data.id;
@@ -1586,6 +1726,12 @@
             renderDocumentList(docs);
         }
 
+        function docTypeIcon(filename) {
+            const ext = filename.split('.').pop().toLowerCase();
+            const icons = { pdf: '\u{1F4C4}', txt: '\u{1F4DD}', md: '\u{1F4CB}', docx: '\u{1F4C3}', csv: '\u{1F4CA}' };
+            return icons[ext] || '\u{1F4C4}';
+        }
+
         function renderDocumentList(docs) {
             const list = document.getElementById('docList');
             if (docs.length === 0) {
@@ -1594,7 +1740,7 @@
             }
             list.innerHTML = docs.map(d => `
                 <div class="doc-item">
-                    <span class="doc-item-name">${escapeHtml(d.filename)}</span>
+                    <span class="doc-item-name">${docTypeIcon(d.filename)} ${escapeHtml(d.filename)}</span>
                     <span class="doc-item-stats">${d.pages} pages, ${d.chunks} chunks</span>
                     <button class="doc-item-delete" onclick="deleteDocument('${escapeHtml(d.filename).replace(/'/g, "\\'")}')" title="Remove">&#x2715;</button>
                 </div>
@@ -1719,7 +1865,9 @@
                 if (msg.role === 'assistant' && msg.metadata && msg.metadata.sources && msg.metadata.sources.length > 0) {
                     container.appendChild(createSourcesElement(msg.metadata.sources));
                 }
-                const el = createMessageElement(msg.role, msg.content, msg.metadata);
+                // Inject message ID into metadata so the branch button can reference it
+                const meta = msg.metadata ? { ...msg.metadata, _message_id: msg.id } : { _message_id: msg.id };
+                const el = createMessageElement(msg.role, msg.content, meta);
                 container.appendChild(el);
                 i++;
             }
@@ -1769,6 +1917,19 @@
                 if (metadata.classify_ms) parts.push(`routed in ${metadata.classify_ms}ms`);
                 timing.textContent = parts.join(' \u00b7 ');
                 div.appendChild(timing);
+            }
+
+            // Branch/retry hover actions on assistant messages
+            if (role === 'assistant' && metadata && !metadata.partial && !metadata.pipeline) {
+                const msgId = metadata._message_id;
+                if (msgId && currentConversationId) {
+                    const actions = document.createElement('div');
+                    actions.className = 'message-actions';
+                    actions.innerHTML = `
+                        <button class="msg-action-btn" onclick="branchFromMessage('${currentConversationId}', '${msgId}')">&#x1F33F; Branch from here</button>
+                    `;
+                    div.appendChild(actions);
+                }
             }
 
             return div;
@@ -2033,11 +2194,31 @@
 
             const messagesContainer = document.getElementById('messages');
             const userEl = createMessageElement('user', text, null);
+            // Capture images before clearing so they're available for the API call
+            const imagesToSend = currentMode === 'vision' ? [...pendingImages] : [];
+
+            // Show image thumbnails in the user message for vision mode
+            if (imagesToSend.length > 0) {
+                const imgContainer = document.createElement('div');
+                imgContainer.className = 'message-images';
+                for (const img of imagesToSend) {
+                    const imgEl = document.createElement('img');
+                    imgEl.src = 'data:image/png;base64,' + img;
+                    imgContainer.appendChild(imgEl);
+                }
+                userEl.querySelector('.message-content').prepend(imgContainer);
+            }
             messagesContainer.appendChild(userEl);
 
             input.value = '';
             input.style.height = 'auto';
             scrollToBottom();
+
+            // Clear vision images after capturing
+            if (currentMode === 'vision') {
+                pendingImages = [];
+                renderVisionPreview();
+            }
 
             // Create conversation if needed — must complete before chat POST
             // (we need the ID), but sidebar refresh is fire-and-forget
@@ -2045,7 +2226,7 @@
                 const res = await fetch('/conversations', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: currentMode }),
+                    body: JSON.stringify({ mode: currentMode, persona_id: currentPersonaId }),
                 });
                 const data = await res.json();
                 currentConversationId = data.id;
@@ -2088,7 +2269,10 @@
                 const fetchOptions = {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text }),
+                    body: JSON.stringify({
+                        message: text,
+                        images: imagesToSend.length > 0 ? imagesToSend : null,
+                    }),
                 };
                 if (writingAbortController) {
                     fetchOptions.signal = writingAbortController.signal;
@@ -2491,6 +2675,127 @@
         }
 
         // =========================================================
+        // Personas
+        // =========================================================
+
+        async function loadPersonas() {
+            try {
+                const res = await fetch('/personas');
+                const personas = await res.json();
+                const sel = document.getElementById('personaSelect');
+                sel.innerHTML = personas.map(p =>
+                    `<option value="${escapeHtml(p.id)}" ${p.id === currentPersonaId ? 'selected' : ''}>${escapeHtml(p.icon)} ${escapeHtml(p.name)}</option>`
+                ).join('');
+            } catch {}
+        }
+
+        function onPersonaChange(personaId) {
+            currentPersonaId = personaId;
+        }
+
+        // =========================================================
+        // Vision mode — image handling
+        // =========================================================
+
+        function updateVisionUI() {
+            const isVision = currentMode === 'vision';
+            document.getElementById('visionAttachBtn').style.display = isVision ? 'block' : 'none';
+            if (!isVision) {
+                pendingImages = [];
+                renderVisionPreview();
+            }
+        }
+
+        function renderVisionPreview() {
+            const container = document.getElementById('visionPreviewInner');
+            const wrapper = document.getElementById('visionPreview');
+            if (pendingImages.length === 0) {
+                wrapper.style.display = 'none';
+                container.innerHTML = '';
+                return;
+            }
+            wrapper.style.display = 'block';
+            container.innerHTML = pendingImages.map((img, i) => `
+                <div class="vision-thumb">
+                    <img src="data:image/png;base64,${img}">
+                    <button class="vision-thumb-remove" onclick="removeVisionImage(${i})">x</button>
+                </div>
+            `).join('');
+        }
+
+        function removeVisionImage(index) {
+            pendingImages.splice(index, 1);
+            renderVisionPreview();
+        }
+
+        function addVisionImage(file) {
+            const reader = new FileReader();
+            reader.onload = () => {
+                // Strip the data:image/...;base64, prefix — Ollama wants raw base64
+                const base64 = reader.result.split(',')[1];
+                pendingImages.push(base64);
+                renderVisionPreview();
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // Image input handler
+        document.getElementById('imageInput').addEventListener('change', (e) => {
+            for (const file of e.target.files) {
+                if (file.type.startsWith('image/')) addVisionImage(file);
+            }
+            e.target.value = '';
+        });
+
+        // Paste support: Cmd+V to paste screenshots directly
+        document.addEventListener('paste', (e) => {
+            if (currentMode !== 'vision') return;
+            for (const item of (e.clipboardData || {}).items || []) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    addVisionImage(item.getAsFile());
+                }
+            }
+        });
+
+        // Drag-and-drop images onto the input area in vision mode
+        document.querySelector('.input-area').addEventListener('dragover', (e) => {
+            if (currentMode !== 'vision') return;
+            e.preventDefault();
+        });
+        document.querySelector('.input-area').addEventListener('drop', (e) => {
+            if (currentMode !== 'vision') return;
+            e.preventDefault();
+            for (const file of e.dataTransfer.files) {
+                if (file.type.startsWith('image/')) addVisionImage(file);
+            }
+        });
+
+        // =========================================================
+        // Branching
+        // =========================================================
+
+        async function branchFromMessage(conversationId, messageId) {
+            try {
+                const res = await fetch(`/conversations/${conversationId}/branch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ from_message_id: messageId, persona_id: currentPersonaId }),
+                });
+                if (!res.ok) {
+                    const err = await res.json();
+                    showToast(err.detail || 'Branch failed', 'error');
+                    return;
+                }
+                const data = await res.json();
+                await loadConversation(data.id);
+                showToast('Conversation branched', 'success');
+            } catch (err) {
+                showToast('Branch error: ' + err.message, 'error');
+            }
+        }
+
+        // =========================================================
         // Settings panel
         // =========================================================
 
@@ -2508,7 +2813,7 @@
             const modelNames = allModels.map(m => m.name || m.model || 'unknown');
 
             // Populate model dropdowns
-            const modelKeys = ['general_model', 'code_model', 'reasoning_model', 'rag_model', 'writer_model', 'editor_model'];
+            const modelKeys = ['general_model', 'code_model', 'reasoning_model', 'rag_model', 'writer_model', 'editor_model', 'vision_model'];
             for (const key of modelKeys) {
                 const sel = document.getElementById('set-' + key);
                 sel.innerHTML = modelNames.map(n =>
@@ -2539,6 +2844,7 @@
                 rag_model: document.getElementById('set-rag_model').value,
                 writer_model: document.getElementById('set-writer_model').value,
                 editor_model: document.getElementById('set-editor_model').value,
+                vision_model: document.getElementById('set-vision_model').value,
                 search_method: document.getElementById('set-search_method').value,
                 search_results_count: parseInt(document.getElementById('set-search_results_count').value),
                 max_writing_rounds: parseInt(document.getElementById('set-max_writing_rounds').value),
@@ -2796,7 +3102,7 @@
                 applyTheme(settingsData.theme);
             } catch {}
 
-            await loadConversations();
+            await Promise.all([loadConversations(), loadPersonas()]);
 
             // Fade out overlay
             overlay.classList.add('fade-out');

@@ -65,6 +65,7 @@ async def run_pipeline(
     doc_context: str | None = None,
     writer_model: str | None = None,
     editor_model: str | None = None,
+    persona_prompt: str | None = None,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run the write-critique-revise pipeline, yielding events for each phase.
 
@@ -128,10 +129,15 @@ async def run_pipeline(
         # with the research material so the Writer can reference specific
         # findings. This is the cross-mode intelligence at work — the writing
         # pipeline becomes research-aware without the user switching modes.
+        # Stack persona prompt before writer prompt (persona = who you are,
+        # writer prompt = what to do). The Editor does NOT get the persona
+        # because its job is objective critique regardless of voice.
         system_prompt = WRITER_SYSTEM_PROMPT
+        if persona_prompt:
+            system_prompt = persona_prompt + "\n\n" + system_prompt
         if doc_context:
             system_prompt = (
-                f"{WRITER_SYSTEM_PROMPT}\n\n"
+                f"{system_prompt}\n\n"
                 "You have access to research documents. Reference specific "
                 "findings when relevant. Here is the research material:\n\n"
                 f"{doc_context}"

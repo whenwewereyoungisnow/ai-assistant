@@ -14,6 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 import database
 import documents
 import models
+import personas
 import settings
 import streams
 from logging_middleware import LoggingMiddleware, init_logs_table
@@ -27,10 +28,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     database.init_db()
     settings.init_settings()
     init_logs_table()
+    personas.init_personas()
     models.init_client()
 
     # Restore documents from SQLite so they survive restarts without re-uploading.
-    # Must run after init_db (needs the table) and before preload (no Ollama needed).
     documents.load_cached_documents()
 
     # Preload the classifier model so the first question doesn't wait for a cold
@@ -208,6 +209,7 @@ class SettingsUpdateRequest(BaseModel):
     rag_model: str | None = None
     writer_model: str | None = None
     editor_model: str | None = None
+    vision_model: str | None = None
     max_writing_rounds: int | None = None
     search_method: str | None = None
     search_results_count: int | None = None
@@ -270,10 +272,12 @@ def update_settings(body: SettingsUpdateRequest) -> dict[str, Any]:
 class CreateConversationRequest(BaseModel):
     mode: Literal["chat", "documents", "writing", "vision"]
     title: str | None = None
+    persona_id: str | None = None
 
 
 class ChatRequest(BaseModel):
     message: str
+    images: list[str] | None = None  # base64 encoded images for vision mode
 
 
 class SearchRequest(BaseModel):
@@ -289,7 +293,9 @@ def list_conversations() -> list[dict[str, Any]]:
 
 @app.post("/conversations", status_code=201)
 def create_conversation(body: CreateConversationRequest) -> dict[str, str]:
-    conversation_id = database.create_conversation(mode=body.mode, title=body.title)
+    conversation_id = database.create_conversation(
+        mode=body.mode, title=body.title, persona_id=body.persona_id
+    )
     return {"id": conversation_id}
 
 
@@ -419,6 +425,16 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
                 conversation_id, body.message, history, is_first_message
             )
         )
+    elif mode == "vision":
+        return EventSourceResponse(
+            streams.vision_event_stream(
+                conversation_id,
+                body.message,
+                history,
+                images=body.images or [],
+                is_first_message=is_first_message,
+            )
+        )
     else:
         return EventSourceResponse(
             streams.chat_event_stream(
@@ -432,12 +448,17 @@ async def chat_endpoint(conversation_id: str, body: ChatRequest) -> EventSourceR
 
 @app.post("/documents/upload")
 async def upload_document(file: UploadFile) -> dict[str, Any]:
-    """Upload a PDF and process it for search."""
+    """Upload a document (PDF, TXT, MD, DOCX, CSV) and process it for search."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in documents.SUPPORTED_EXTENSIONS:
+        supported = ", ".join(sorted(documents.SUPPORTED_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type. Supported: {supported}",
+        )
 
     safe_name = Path(file.filename).name
     if not safe_name:
@@ -458,7 +479,7 @@ async def upload_document(file: UploadFile) -> dict[str, Any]:
             )
 
         temp_path.write_bytes(content)
-        result = await documents.process_pdf(temp_path, safe_name)
+        result = await documents.process_document(temp_path, safe_name)
         return result
 
     except ValueError as e:
@@ -467,13 +488,16 @@ async def upload_document(file: UploadFile) -> dict[str, Any]:
         raise
     except Exception as e:
         error_msg = str(e)
-        # Provide specific error messages for common PDF failures
-        if "encrypted" in error_msg.lower() or "password" in error_msg.lower():
-            detail = "This PDF is password-protected. Please remove the password and try again."
-        elif "corrupt" in error_msg.lower() or "invalid" in error_msg.lower():
-            detail = "This PDF appears to be corrupted and could not be read."
+        # PDF-specific error messages
+        if ext == ".pdf":
+            if "encrypted" in error_msg.lower() or "password" in error_msg.lower():
+                detail = "This PDF is password-protected. Please remove the password and try again."
+            elif "corrupt" in error_msg.lower() or "invalid" in error_msg.lower():
+                detail = "This PDF appears to be corrupted and could not be read."
+            else:
+                detail = f"Could not process file: {error_msg}"
         else:
-            detail = f"Could not process PDF: {error_msg}"
+            detail = f"Could not process file: {error_msg}"
         raise HTTPException(status_code=400, detail=detail)
     finally:
         if temp_path.exists():
@@ -497,3 +521,97 @@ async def search_documents(body: SearchRequest) -> list[dict[str, Any]]:
     return await documents.search_chunks(
         query=body.query, method=body.method, top_k=body.top_k
     )
+
+
+# --- Persona endpoints ---
+
+
+class CreatePersonaRequest(BaseModel):
+    name: str
+    icon: str = "\U0001f916"
+    system_prompt: str
+    description: str = ""
+
+
+class UpdatePersonaRequest(BaseModel):
+    name: str | None = None
+    icon: str | None = None
+    system_prompt: str | None = None
+    description: str | None = None
+
+
+@app.get("/personas")
+def list_personas() -> list[dict[str, Any]]:
+    return database.list_personas()
+
+
+@app.post("/personas", status_code=201)
+def create_persona_endpoint(body: CreatePersonaRequest) -> dict[str, str]:
+    persona_id = database.create_persona(
+        name=body.name,
+        icon=body.icon,
+        system_prompt=body.system_prompt,
+        description=body.description,
+    )
+    return {"id": persona_id}
+
+
+@app.put("/personas/{persona_id}")
+def update_persona_endpoint(
+    persona_id: str, body: UpdatePersonaRequest
+) -> dict[str, str]:
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    success = database.update_persona(persona_id, **updates)
+    if not success:
+        raise HTTPException(
+            status_code=403, detail="Cannot edit built-in personas or persona not found"
+        )
+    return {"status": "ok"}
+
+
+@app.delete("/personas/{persona_id}", status_code=204)
+def delete_persona_endpoint(persona_id: str) -> None:
+    success = database.delete_persona(persona_id)
+    if not success:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot delete built-in personas or persona not found",
+        )
+
+
+# --- Branching endpoints ---
+
+
+class BranchRequest(BaseModel):
+    from_message_id: str
+    persona_id: str | None = None
+
+
+@app.post("/conversations/{conversation_id}/branch", status_code=201)
+def branch_conversation_endpoint(
+    conversation_id: str, body: BranchRequest
+) -> dict[str, str]:
+    """Create a new conversation branched from a specific message."""
+    conversation = database.get_conversation(conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Verify the message belongs to this conversation
+    message_ids = {m["id"] for m in conversation.get("messages", [])}
+    if body.from_message_id not in message_ids:
+        raise HTTPException(
+            status_code=400, detail="Message not found in this conversation"
+        )
+
+    try:
+        new_id = database.branch_conversation(
+            conversation_id, body.from_message_id, body.persona_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"id": new_id}
+
+
+@app.get("/conversations/{conversation_id}/branches")
+def list_branches_endpoint(conversation_id: str) -> list[dict[str, Any]]:
+    return database.list_branches(conversation_id)

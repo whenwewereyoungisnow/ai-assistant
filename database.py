@@ -144,18 +144,65 @@ def init_db() -> None:
             ON document_chunks(filename)
         """)
 
+        # Personas table — stores reusable system prompts that define the
+        # assistant's personality. Built-in personas are seeded on first run
+        # and can't be deleted. Users can create custom personas.
+        #
+        # How system prompts shape model behavior:
+        # The system prompt is the first message the model sees. It acts as
+        # persistent instructions throughout the conversation — "you are a
+        # patient tutor" makes every response more educational, while
+        # "you are a code reviewer" makes responses more critical. The model
+        # treats it as its identity for the entire conversation.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS personas (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                icon        TEXT NOT NULL DEFAULT '🤖',
+                system_prompt TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                is_built_in INTEGER NOT NULL DEFAULT 0,
+                created_at  TIMESTAMP NOT NULL
+            )
+        """)
+
+        # Add persona_id column to conversations (migration for existing DBs).
+        # SQLite lacks "ADD COLUMN IF NOT EXISTS", so we try and ignore the
+        # error if the column already exists.
+        try:
+            conn.execute("ALTER TABLE conversations ADD COLUMN persona_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        # Branch columns for conversation branching (Phase 4)
+        try:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN branch_from_conversation_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN branch_from_message_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+
         conn.commit()
     finally:
         conn.close()
 
 
-def create_conversation(mode: Mode, title: str | None = None) -> str:
+def create_conversation(
+    mode: Mode, title: str | None = None, persona_id: str | None = None
+) -> str:
     """Create a new conversation and return its ID.
 
     Args:
         mode: One of "chat", "documents", "writing", "vision"
         title: Display title. Defaults to "New conversation" — the frontend
                can auto-update this from the first user message later.
+        persona_id: Optional persona to use for this conversation.
     """
     conversation_id = str(uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -163,8 +210,9 @@ def create_conversation(mode: Mode, title: str | None = None) -> str:
     conn = connect()
     try:
         conn.execute(
-            "INSERT INTO conversations (id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (conversation_id, title or "New conversation", mode, now, now),
+            "INSERT INTO conversations (id, title, mode, persona_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (conversation_id, title or "New conversation", mode, persona_id, now, now),
         )
         conn.commit()
     finally:
@@ -173,18 +221,16 @@ def create_conversation(mode: Mode, title: str | None = None) -> str:
 
 
 def list_conversations() -> list[dict[str, Any]]:
-    """Return all conversations, newest first, with message counts.
-
-    The COUNT subquery avoids loading all messages just to count them.
-    This is a common SQL pattern: use a correlated subquery to add
-    computed columns without a separate query.
-    """
+    """Return all conversations, newest first, with message counts and persona info."""
     conn = connect()
     try:
         rows = conn.execute("""
             SELECT c.*,
-                   (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count
+                   (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+                   p.name AS persona_name,
+                   p.icon AS persona_icon
             FROM conversations c
+            LEFT JOIN personas p ON c.persona_id = p.id
             ORDER BY c.updated_at DESC
         """).fetchall()
     finally:
@@ -491,3 +537,264 @@ def update_message_content(
         conn.commit()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Persona CRUD
+# ---------------------------------------------------------------------------
+
+
+def seed_personas(personas: list[dict[str, Any]]) -> None:
+    """Insert built-in personas if they don't already exist.
+
+    Uses INSERT OR IGNORE so existing personas aren't overwritten —
+    this is safe to call on every startup.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        for p in personas:
+            conn.execute(
+                "INSERT OR IGNORE INTO personas "
+                "(id, name, icon, system_prompt, description, is_built_in, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?)",
+                (
+                    p["id"],
+                    p["name"],
+                    p["icon"],
+                    p["system_prompt"],
+                    p["description"],
+                    now,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_personas() -> list[dict[str, Any]]:
+    """Return all personas, built-in first, then alphabetical."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM personas ORDER BY is_built_in DESC, name"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_persona(persona_id: str) -> dict[str, Any] | None:
+    """Return a single persona by ID, or None if not found."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM personas WHERE id = ?", (persona_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def create_persona(name: str, icon: str, system_prompt: str, description: str) -> str:
+    """Create a custom persona and return its ID."""
+    persona_id = str(uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO personas "
+            "(id, name, icon, system_prompt, description, is_built_in, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (persona_id, name, icon, system_prompt, description, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return persona_id
+
+
+def update_persona(
+    persona_id: str,
+    name: str | None = None,
+    icon: str | None = None,
+    system_prompt: str | None = None,
+    description: str | None = None,
+) -> bool:
+    """Update a custom persona. Returns False if not found or built-in."""
+    persona = get_persona(persona_id)
+    if persona is None or persona["is_built_in"]:
+        return False
+
+    updates: list[str] = []
+    values: list[Any] = []
+    if name is not None:
+        updates.append("name = ?")
+        values.append(name)
+    if icon is not None:
+        updates.append("icon = ?")
+        values.append(icon)
+    if system_prompt is not None:
+        updates.append("system_prompt = ?")
+        values.append(system_prompt)
+    if description is not None:
+        updates.append("description = ?")
+        values.append(description)
+
+    if not updates:
+        return True
+
+    values.append(persona_id)
+    conn = connect()
+    try:
+        conn.execute(
+            f"UPDATE personas SET {', '.join(updates)} WHERE id = ?",
+            values,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
+def delete_persona(persona_id: str) -> bool:
+    """Delete a custom persona. Returns False if not found or built-in.
+
+    Built-in personas can't be deleted — they're part of the app's core
+    identity and other users might expect them to exist.
+    """
+    persona = get_persona(persona_id)
+    if persona is None or persona["is_built_in"]:
+        return False
+
+    conn = connect()
+    try:
+        # Clear persona_id from any conversations using this persona
+        conn.execute(
+            "UPDATE conversations SET persona_id = NULL WHERE persona_id = ?",
+            (persona_id,),
+        )
+        conn.execute("DELETE FROM personas WHERE id = ?", (persona_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
+def get_conversation_persona(conversation_id: str) -> dict[str, Any] | None:
+    """Get the persona assigned to a conversation, or None."""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT p.* FROM personas p "
+            "JOIN conversations c ON c.persona_id = p.id "
+            "WHERE c.id = ?",
+            (conversation_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# Conversation branching
+# ---------------------------------------------------------------------------
+
+
+def branch_conversation(
+    conversation_id: str, from_message_id: str, persona_id: str | None = None
+) -> str:
+    """Create a new conversation branched from a specific message.
+
+    What a conversation tree looks like vs a linear conversation:
+    A linear conversation is a single chain of messages. Branching creates
+    a fork — like git branches. The new conversation copies all messages
+    up to the branch point, then diverges. The original conversation is
+    unchanged. This lets you explore "what if I asked differently?" or
+    "what would a different model say?" without losing the original thread.
+
+    Why branching is useful:
+    - Compare models: branch and retry with a different model
+    - Try different approaches: branch from an earlier point
+    - Explore alternatives without losing the original
+    - Test how different personas respond to the same question
+    """
+    conn = connect()
+    try:
+        # Get the source conversation
+        source = conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        if source is None:
+            raise ValueError("Source conversation not found")
+
+        # Create the branch conversation
+        new_id = str(uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        effective_persona = persona_id or source["persona_id"]
+
+        conn.execute(
+            "INSERT INTO conversations "
+            "(id, title, mode, persona_id, branch_from_conversation_id, "
+            "branch_from_message_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                new_id,
+                f"Branch of {source['title']}",
+                source["mode"],
+                effective_persona,
+                conversation_id,
+                from_message_id,
+                now,
+                now,
+            ),
+        )
+
+        # Copy messages up to and including from_message_id
+        messages = conn.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at",
+            (conversation_id,),
+        ).fetchall()
+
+        # Preserve original timestamps so messages stay in the correct order.
+        # Using `now` for all would make order depend on insertion order, which
+        # is fragile after database maintenance operations.
+        for msg in messages:
+            new_msg_id = str(uuid4())
+            conn.execute(
+                "INSERT INTO messages "
+                "(id, conversation_id, role, content, metadata, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    new_msg_id,
+                    new_id,
+                    msg["role"],
+                    msg["content"],
+                    msg["metadata"],
+                    msg["created_at"],
+                ),
+            )
+            if msg["id"] == from_message_id:
+                break
+
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id
+
+
+def list_branches(conversation_id: str) -> list[dict[str, Any]]:
+    """Return conversations branched from this one."""
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, title, mode, created_at, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count "
+            "FROM conversations c "
+            "WHERE branch_from_conversation_id = ? "
+            "ORDER BY created_at DESC",
+            (conversation_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]

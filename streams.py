@@ -104,11 +104,25 @@ async def chat_event_stream(
     active_routes = settings.get_routes()
 
     # Create a placeholder assistant message before streaming starts.
-    # This gets updated incrementally during streaming so partial responses
-    # survive connection drops.
     message_id = await loop.run_in_executor(
         None, database.add_message, conversation_id, "assistant", "", {"partial": True}
     )
+
+    # Look up persona for system prompt stacking.
+    # Why personas stack with mode prompts:
+    # The persona defines "who you are" (e.g. patient tutor), while the mode
+    # prompt defines "what to do right now" (e.g. route to the best model).
+    # Stacking them gives the model both its identity and its task.
+    persona = await loop.run_in_executor(
+        None, database.get_conversation_persona, conversation_id
+    )
+    persona_prompt = (
+        persona["system_prompt"] if persona and persona["system_prompt"] else None
+    )
+    if persona_prompt:
+        stacked_prompt = persona_prompt + "\n\n" + router.SYSTEM_PROMPT
+    else:
+        stacked_prompt = None  # route_and_respond falls back to its default
 
     # Tracking for periodic partial saves
     token_count = 0
@@ -148,7 +162,10 @@ async def chat_event_stream(
                 }
 
         async for event in router.route_and_respond(
-            effective_message, history, routes=active_routes
+            effective_message,
+            history,
+            routes=active_routes,
+            system_prompt=stacked_prompt,
         ):
             if event["type"] == "routing":
                 routing_metadata = event
@@ -255,6 +272,14 @@ async def documents_event_stream(
         None, database.add_message, conversation_id, "assistant", "", {"partial": True}
     )
 
+    # Persona stacking for documents mode
+    persona = await loop.run_in_executor(
+        None, database.get_conversation_persona, conversation_id
+    )
+    rag_system = RAG_SYSTEM_PROMPT
+    if persona and persona["system_prompt"]:
+        rag_system = persona["system_prompt"] + "\n\n" + RAG_SYSTEM_PROMPT
+
     token_count = 0
     last_save_time = time.monotonic()
 
@@ -270,8 +295,8 @@ async def documents_event_stream(
 
         if not sources:
             full_content = (
-                "No relevant documents found. Please upload some PDFs first, "
-                "then ask your question again."
+                "No relevant documents found. Please upload some documents "
+                "first (PDF, TXT, MD, DOCX, or CSV), then ask your question again."
             )
             yield {
                 "event": "token",
@@ -308,9 +333,7 @@ async def documents_event_stream(
             f"Question: {message}"
         )
 
-        messages: list[dict[str, str]] = [
-            {"role": "system", "content": RAG_SYSTEM_PROMPT}
-        ]
+        messages: list[dict[str, str]] = [{"role": "system", "content": rag_system}]
         messages.extend(history)
         messages.append({"role": "user", "content": augmented_message})
 
@@ -391,6 +414,16 @@ async def writing_event_stream(
     writer_model = settings.get_setting("writer_model")
     editor_model = settings.get_setting("editor_model")
     max_rounds = settings.get_setting("max_writing_rounds")
+    loop = asyncio.get_running_loop()
+
+    # Persona stacking for writing mode — only the Writer gets the persona
+    # voice. The Editor stays objective to give honest critique.
+    persona = await loop.run_in_executor(
+        None, database.get_conversation_persona, conversation_id
+    )
+    persona_prompt = (
+        persona["system_prompt"] if persona and persona["system_prompt"] else None
+    )
 
     try:
         # --- Cross-mode: check if documents can inform the writing ---
@@ -434,6 +467,7 @@ async def writing_event_stream(
             doc_context=doc_context,
             writer_model=writer_model,
             editor_model=editor_model,
+            persona_prompt=persona_prompt,
         ):
             if event["type"] == "phase_start":
                 yield {
@@ -501,6 +535,126 @@ async def writing_event_stream(
                 }
 
     except Exception as e:
+        yield {
+            "event": "error",
+            "data": json.dumps({"error": str(e)}),
+        }
+
+
+VISION_SYSTEM_PROMPT = (
+    "You are a helpful assistant with vision capabilities. "
+    "Analyze the provided images carefully and respond to the user's question. "
+    "Describe what you see in detail when asked. "
+    "Use markdown formatting when it helps readability."
+)
+
+
+async def vision_event_stream(
+    conversation_id: str,
+    message: str,
+    history: list[dict[str, str]],
+    images: list[str],
+    is_first_message: bool,
+) -> AsyncGenerator[dict[str, str], None]:
+    """SSE event stream for vision mode (image understanding).
+
+    Similar to chat mode but uses a vision-capable model and sends images
+    as base64 alongside the text. No routing step — uses a single dedicated
+    vision model.
+    """
+    full_content = ""
+    loop = asyncio.get_running_loop()
+
+    vision_model = settings.get_setting("vision_model")
+
+    message_id = await loop.run_in_executor(
+        None, database.add_message, conversation_id, "assistant", "", {"partial": True}
+    )
+
+    # Persona stacking
+    persona = await loop.run_in_executor(
+        None, database.get_conversation_persona, conversation_id
+    )
+    system_prompt = VISION_SYSTEM_PROMPT
+    if persona and persona["system_prompt"]:
+        system_prompt = persona["system_prompt"] + "\n\n" + VISION_SYSTEM_PROMPT
+
+    token_count = 0
+    last_save_time = time.monotonic()
+
+    try:
+        yield {
+            "event": "routing",
+            "data": json.dumps(
+                {
+                    "type": "routing",
+                    "route": "vision",
+                    "model": vision_model,
+                    "reason": f"{len(images)} image(s) attached",
+                    "classify_ms": 0,
+                }
+            ),
+        }
+
+        msgs: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        msgs.extend(history)
+        msgs.append({"role": "user", "content": message})
+
+        total_start = time.monotonic()
+
+        if images:
+            token_gen = models.stream_vision_chat(
+                vision_model, msgs, images, keep_alive="10m"
+            )
+        else:
+            # No images — fall back to regular chat with the vision model
+            token_gen = models.stream_chat(vision_model, msgs, keep_alive="10m")
+
+        async for token in token_gen:
+            full_content += token
+            token_count += 1
+            yield {
+                "event": "token",
+                "data": json.dumps({"type": "token", "content": token}),
+            }
+
+            now = time.monotonic()
+            if (
+                token_count >= PARTIAL_SAVE_TOKENS
+                or now - last_save_time >= PARTIAL_SAVE_SECONDS
+            ):
+                token_count = 0
+                last_save_time = now
+                await _save_partial(message_id, full_content, loop)
+
+        total_ms = round((time.monotonic() - total_start) * 1000)
+        metadata = {
+            "model": vision_model,
+            "route": "vision",
+            "image_count": len(images),
+            "total_ms": total_ms,
+        }
+        await loop.run_in_executor(
+            None, database.update_message_content, message_id, full_content, metadata
+        )
+
+        yield {
+            "event": "done",
+            "data": json.dumps({"total_ms": total_ms, "stream_ms": total_ms}),
+        }
+
+        if is_first_message:
+            asyncio.create_task(auto_title(conversation_id, message))
+
+    except Exception as e:
+        if full_content:
+            await loop.run_in_executor(
+                None,
+                database.update_message_content,
+                message_id,
+                full_content,
+                {"error": str(e), "partial": True},
+            )
         yield {
             "event": "error",
             "data": json.dumps({"error": str(e)}),

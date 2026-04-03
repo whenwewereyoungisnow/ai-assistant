@@ -352,6 +352,75 @@ async def embed(
     return embeddings
 
 
+async def stream_vision_chat(
+    model: str,
+    messages: list[dict[str, Any]],
+    images: list[str],
+    options: dict[str, Any] | None = None,
+    keep_alive: str | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream a vision model response with images.
+
+    How multimodal messages are structured in the Ollama API:
+    Vision-capable models (like gemma3) accept images alongside text in the
+    same message. The last user message gets an "images" field containing
+    a list of base64-encoded strings (raw base64, no data:image/... prefix).
+    The model processes both the text and the image together, allowing it to
+    answer questions about photos, diagrams, screenshots, etc.
+
+    Why vision models are separate from text models:
+    Vision models have a different architecture — they include an image encoder
+    (typically a Vision Transformer) alongside the text decoder. They're trained
+    on image-text pairs, not just text. This makes them larger and specialized,
+    so we use them only when images are provided.
+
+    Args:
+        model: Vision-capable Ollama model (e.g. "gemma3:27b")
+        messages: Chat history in OpenAI-style format
+        images: List of base64-encoded image strings
+        options: Optional Ollama parameters
+        keep_alive: How long to keep model loaded
+    """
+    merged_options: dict[str, Any] = {"num_ctx": 8192}
+    if options:
+        merged_options.update(options)
+
+    # Inject images into the last user message — this is how Ollama's
+    # multimodal API expects them.
+    messages = list(messages)  # shallow copy
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i]["role"] == "user":
+            messages[i] = {**messages[i], "images": images}
+            break
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+        "options": merged_options,
+    }
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
+
+    assert _ollama_semaphore is not None
+    async with _ollama_semaphore:
+        async with get_client().stream("POST", "/api/chat", json=payload) as response:
+            if response.status_code != 200:
+                await response.aread()
+                raise RuntimeError(
+                    f"Ollama returned {response.status_code}: {response.text}"
+                )
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if "error" in chunk:
+                    raise RuntimeError(f"Ollama error: {chunk['error']}")
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    yield token
+
+
 async def list_models() -> list[dict[str, Any]]:
     """List all models downloaded in Ollama.
 
