@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Data (database, uploaded files)
+data/
+
 # Environment variables (secrets, API keys — never commit this)
 .env
